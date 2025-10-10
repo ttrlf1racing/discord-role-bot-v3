@@ -23,7 +23,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-const serverConfig = new Map();           // Stores role/channel/message per guild
+const serverConfig = new Map();           // Stores role/channel/message/name per guild
 const activeOnboarding = new Map();       // Tracks users currently in onboarding flow
 
 // Error handling
@@ -48,6 +48,9 @@ client.once(Events.ClientReady, async () => {
       new SlashCommandBuilder()
         .setName('create-role-message')
         .setDescription('Configure onboarding role, channel, and message')
+        .addStringOption(opt =>
+          opt.setName('name').setDescription('Name for this onboarding flow').setRequired(true)
+        )
         .addRoleOption(opt =>
           opt.setName('role').setDescription('Role to assign after confirmation').setRequired(true)
         )
@@ -93,19 +96,21 @@ client.on(Events.InteractionCreate, async interaction => {
   const config = serverConfig.get(guildId);
 
   if (interaction.commandName === 'create-role-message') {
+    const name = interaction.options.getString('name');
     const role = interaction.options.getRole('role');
     const channel = interaction.options.getChannel('channel');
     const message = interaction.options.getString('message');
 
+    config.name = name;
     config.roleId = role.id;
     config.channelId = channel.id;
     config.message = message;
 
-    await interaction.reply(`✅ Role message created:\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
+    await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
 
   if (interaction.commandName === 'list-role-messages') {
-    if (!config.roleId || !config.channelId || !config.message) {
+    if (!config.roleId || !config.channelId || !config.message || !config.name) {
       await interaction.reply({ content: '⚠️ No active role message configuration found.', ephemeral: true });
       return;
     }
@@ -113,9 +118,10 @@ client.on(Events.InteractionCreate, async interaction => {
     const role = interaction.guild.roles.cache.get(config.roleId);
     const channel = interaction.guild.channels.cache.get(config.channelId);
     const message = config.message;
+    const name = config.name;
 
     await interaction.reply({
-      content: `📋 Active Role Message Configuration:\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
+      content: `📋 Active Role Message Configuration:\n• Name: **${name}**\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
       ephemeral: true
     });
   }
