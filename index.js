@@ -24,7 +24,7 @@ const client = new Client({
 });
 
 const serverConfig = new Map();           // Stores role/channel/message per guild
-const recentlyConfirmed = new Map();      // Tracks cooldown users per guild
+const activeOnboarding = new Map();       // Tracks users currently in onboarding flow
 
 // Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
@@ -119,40 +119,44 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const config = serverConfig.get(guildId);
   if (!config || !config.roleId || !config.channelId || !config.message) return;
 
-  const isCoolingDown = recentlyConfirmed.has(guildId) && recentlyConfirmed.get(guildId).has(newMember.id);
-  if (isCoolingDown) {
-    console.log(`⏸ Skipping role removal for ${newMember.user.tag} (cooldown active)`);
-    return;
-  }
+  if (!activeOnboarding.has(guildId)) activeOnboarding.set(guildId, new Set());
+  const onboardingSet = activeOnboarding.get(guildId);
 
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
 
-  const username = newMember.nickname || newMember.user.username;
+  // If user already confirmed, skip
+  if (!onboardingSet.has(newMember.id)) {
+    const username = newMember.nickname || newMember.user.username;
 
-  const confirmButton = new ButtonBuilder()
-    .setCustomId(`confirm_read_${newMember.id}`)
-    .setLabel('✅ I’ve read it')
-    .setStyle(ButtonStyle.Success);
+    const confirmButton = new ButtonBuilder()
+      .setCustomId(`confirm_read_${newMember.id}`)
+      .setLabel('✅ I’ve read it')
+      .setStyle(ButtonStyle.Success);
 
-  const row = new ActionRowBuilder().addComponents(confirmButton);
+    const row = new ActionRowBuilder().addComponents(confirmButton);
 
-  const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
-  if (fallbackChannel) {
-    await fallbackChannel.send({
-      content: config.message.replace('{user}', username),
-      components: [row]
-    });
-    console.log(`📨 Onboarding message sent to ${username}`);
+    const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
+    if (fallbackChannel) {
+      await fallbackChannel.send({
+        content: config.message.replace('{user}', username),
+        components: [row]
+      });
+      console.log(`📨 Onboarding message sent to ${username}`);
+    } else {
+      console.error(`❌ Fallback channel not found`);
+    }
+
+    onboardingSet.add(newMember.id);
+
+    try {
+      await newMember.roles.remove(config.roleId);
+      console.log(`⏳ Role temporarily removed from ${username} until confirmation`);
+    } catch (err) {
+      console.error(`❌ Failed to remove role from ${username}:`, err);
+    }
   } else {
-    console.error(`❌ Fallback channel not found`);
-  }
-
-  try {
-    await newMember.roles.remove(config.roleId);
-    console.log(`⏳ Role temporarily removed from ${username} until confirmation`);
-  } catch (err) {
-    console.error(`❌ Failed to remove role from ${username}:`, err);
+    console.log(`⏸ ${newMember.user.tag} already confirmed. Skipping role removal.`);
   }
 });
 
@@ -181,13 +185,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   try {
     await member.roles.add(role);
-    if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
-    recentlyConfirmed.get(guildId).add(memberId);
-
-    // Remove from cooldown after 10 seconds
-    setTimeout(() => {
-      recentlyConfirmed.get(guildId)?.delete(memberId);
-    }, 10000);
+    activeOnboarding.get(guildId)?.delete(memberId);
 
     await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
