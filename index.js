@@ -1,71 +1,185 @@
-require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, Events } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Events,
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  ChannelType
+} = require('discord.js');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMembers
   ],
   partials: [Partials.Channel]
 });
 
-// CONFIG: Set your target role ID and hosting channel ID
-const TARGET_ROLE_ID = 'YOUR_ROLE_ID';
-const HOSTING_CHANNEL_ID = 'YOUR_CHANNEL_ID';
-const CUSTOM_MESSAGE = `This is your onboarding message. Please read it carefully before confirming.`;
+const serverConfig = new Map();
 
-// Bot ready
-client.once(Events.ClientReady, () => {
-  console.log(`Bot is online as ${client.user.tag}`);
+process.on('unhandledRejection', error => {
+  console.error('Unhandled promise rejection:', error);
+});
+process.on('uncaughtException', error => {
+  console.error('Uncaught exception:', error);
 });
 
-// Watch for role assignment
-client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-  const hadRole = oldMember.roles.cache.has(TARGET_ROLE_ID);
-  const hasRole = newMember.roles.cache.has(TARGET_ROLE_ID);
+const rawToken = process.env.DISCORD_TOKEN;
+const token = String(rawToken).trim();
+console.log(`🔍 Token received: ${token.slice(0, 10)}...`);
+if (!token || typeof token !== 'string' || token.length < 10) {
+  console.error('❌ DISCORD_TOKEN is missing or malformed. Check Railway Variables.');
+  process.exit(1);
+}
 
-  if (!hadRole && hasRole) {
-    const channel = newMember.guild.channels.cache.get(HOSTING_CHANNEL_ID);
-    if (!channel) return;
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
 
-    const embed = new EmbedBuilder()
-      .setTitle(`Welcome ${newMember.user.username}, you have been given the ${newMember.guild.roles.cache.get(TARGET_ROLE_ID).name} role.`)
-      .setDescription(`${CUSTOM_MESSAGE}\n\nPlease read the information above and click the button to confirm.`)
-      .setColor(0x00AE86);
+  client.guilds.cache.forEach(async guild => {
+    const commands = [
+      new SlashCommandBuilder()
+        .setName('setrole')
+        .setDescription('Set the role to assign on confirmation')
+        .addRoleOption(opt =>
+          opt.setName('role')
+            .setDescription('Target role')
+            .setRequired(true)
+        ),
 
-    const confirmButton = new ButtonBuilder()
-      .setCustomId(`confirm_${newMember.id}_${TARGET_ROLE_ID}`)
-      .setLabel('Confirm')
-      .setStyle(ButtonStyle.Success);
+      new SlashCommandBuilder()
+        .setName('setchannel')
+        .setDescription('Set the fallback channel for onboarding')
+        .addChannelOption(opt =>
+          opt.setName('channel')
+            .setDescription('Target channel')
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        ),
 
-    const row = new ActionRowBuilder().addComponents(confirmButton);
+      new SlashCommandBuilder()
+        .setName('setmessage')
+        .setDescription('Set the onboarding message')
+        .addStringOption(opt =>
+          opt.setName('text')
+            .setDescription('Message content (use {user} to insert name)')
+            .setRequired(true)
+        )
+    ].map(cmd => cmd.toJSON());
 
-    await channel.send({ content: `${newMember}`, embeds: [embed], components: [row] });
+    const rest = new REST({ version: '10' }).setToken(token);
+    try {
+      await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
+      console.log(`✅ Slash commands registered for ${guild.name}`);
+    } catch (err) {
+      console.error(`❌ Failed to register commands for ${guild.name}:`, err);
+    }
+  });
+});
+
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', ephemeral: true });
+    return;
+  }
+
+  const member = interaction.member;
+  const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin');
+  if (!isAdmin) {
+    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', ephemeral: true });
+    return;
+  }
+
+  const guildId = interaction.guild.id;
+  if (!serverConfig.has(guildId)) serverConfig.set(guildId, {});
+  const config = serverConfig.get(guildId);
+
+  if (interaction.commandName === 'setrole') {
+    const role = interaction.options.getRole('role');
+    config.roleId = role.id;
+    await interaction.reply(`✅ Role set to **${role.name}**`);
+  }
+
+  if (interaction.commandName === 'setchannel') {
+    const channel = interaction.options.getChannel('channel');
+    config.channelId = channel.id;
+    await interaction.reply(`✅ Fallback channel set to **${channel.name}**`);
+  }
+
+  if (interaction.commandName === 'setmessage') {
+    const message = interaction.options.getString('text');
+    config.message = message;
+    await interaction.reply(`✅ Onboarding message updated`);
   }
 });
 
-// Handle button interaction
+// Detect role assignment to existing member
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  const guildId = newMember.guild.id;
+  const config = serverConfig.get(guildId);
+  if (!config || !config.roleId || !config.channelId || !config.message) return;
+
+  const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
+  if (!addedRoles.has(config.roleId)) return;
+
+  const username = newMember.nickname || newMember.user.username;
+
+  const confirmButton = new ButtonBuilder()
+    .setCustomId(`confirm_read_${newMember.id}`)
+    .setLabel('✅ I’ve read it')
+    .setStyle(ButtonStyle.Success);
+
+  const row = new ActionRowBuilder().addComponents(confirmButton);
+
+  const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
+  if (fallbackChannel) {
+    await fallbackChannel.send({
+      content: config.message.replace('{user}', username),
+      components: [row]
+    });
+    console.log(`📨 Onboarding message sent to ${username}`);
+  } else {
+    console.error(`❌ Fallback channel not found`);
+  }
+
+  try {
+    await newMember.roles.remove(config.roleId);
+    console.log(`⏳ Role temporarily removed from ${username} until confirmation`);
+  } catch (err) {
+    console.error(`❌ Failed to remove role from ${username}:`, err);
+  }
+});
+
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('confirm_read_')) return;
 
-  const [action, userId, roleId] = interaction.customId.split('_');
-  if (action !== 'confirm') return;
+  const memberId = interaction.customId.split('_')[2];
+  const guildId = interaction.guild.id;
+  const config = serverConfig.get(guildId);
+  if (!config || !config.roleId) return;
 
-  if (interaction.user.id !== userId) {
-    return interaction.reply({ content: 'This button is not for you.', ephemeral: true });
+  const member = await interaction.guild.members.fetch(memberId);
+  const role = interaction.guild.roles.cache.get(config.roleId);
+
+  if (!role) {
+    await interaction.reply({ content: '⚠️ Role not found.', ephemeral: true });
+    return;
   }
 
-  const role = interaction.guild.roles.cache.get(roleId);
-  const member = interaction.guild.members.cache.get(userId);
-
-  if (!role || !member) {
-    return interaction.reply({ content: 'Role or user not found.', ephemeral: true });
+  try {
+    await member.roles.add(role);
+    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
+    console.log(`🎯 Role ${role.name} assigned to ${member.user.tag}`);
+  } catch (error) {
+    console.error(`❌ Failed to assign role:`, error);
+    await interaction.reply({ content: '❌ Could not assign role.', ephemeral: true });
   }
-
-  await member.roles.add(role);
-  await interaction.reply({ content: `✅ You now have full access to the ${role.name} role.`, ephemeral: true });
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(token);
