@@ -23,8 +23,8 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-const serverConfig = new Map();         // Stores role/channel/message per guild
-const confirmedUsers = new Map();       // Tracks confirmed users per guild
+const serverConfig = new Map();           // Stores role/channel/message per guild
+const recentlyConfirmed = new Map();      // Tracks cooldown users per guild
 
 // Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
@@ -119,9 +119,9 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const config = serverConfig.get(guildId);
   if (!config || !config.roleId || !config.channelId || !config.message) return;
 
-  const confirmed = confirmedUsers.has(guildId) && confirmedUsers.get(guildId).has(newMember.id);
-  if (confirmed) {
-    console.log(`✅ ${newMember.user.tag} already confirmed. Skipping removal.`);
+  const isCoolingDown = recentlyConfirmed.has(guildId) && recentlyConfirmed.get(guildId).has(newMember.id);
+  if (isCoolingDown) {
+    console.log(`⏸ Skipping role removal for ${newMember.user.tag} (cooldown active)`);
     return;
   }
 
@@ -181,8 +181,13 @@ client.on(Events.InteractionCreate, async interaction => {
 
   try {
     await member.roles.add(role);
-    if (!confirmedUsers.has(guildId)) confirmedUsers.set(guildId, new Set());
-    confirmedUsers.get(guildId).add(memberId);
+    if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
+    recentlyConfirmed.get(guildId).add(memberId);
+
+    // Remove from cooldown after 10 seconds
+    setTimeout(() => {
+      recentlyConfirmed.get(guildId)?.delete(memberId);
+    }, 10000);
 
     await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
