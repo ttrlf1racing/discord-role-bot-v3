@@ -46,23 +46,21 @@ client.once(Events.ClientReady, async () => {
   client.guilds.cache.forEach(async guild => {
     const commands = [
       new SlashCommandBuilder()
-        .setName('setrole')
-        .setDescription('Set the role to assign on confirmation')
+        .setName('create-role-message')
+        .setDescription('Configure onboarding role, channel, and message')
         .addRoleOption(opt =>
-          opt.setName('role').setDescription('Target role').setRequired(true)
-        ),
-      new SlashCommandBuilder()
-        .setName('setchannel')
-        .setDescription('Set the fallback channel for onboarding')
-        .addChannelOption(opt =>
-          opt.setName('channel').setDescription('Target channel').addChannelTypes(ChannelType.GuildText).setRequired(true)
-        ),
-      new SlashCommandBuilder()
-        .setName('setmessage')
-        .setDescription('Set the onboarding message')
-        .addStringOption(opt =>
-          opt.setName('text').setDescription('Message content (use {user} to insert name)').setRequired(true)
+          opt.setName('role').setDescription('Role to assign after confirmation').setRequired(true)
         )
+        .addChannelOption(opt =>
+          opt.setName('channel').setDescription('Channel to post onboarding message').addChannelTypes(ChannelType.GuildText).setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName('message').setDescription('Message content (use {user} to insert name)').setRequired(true)
+        ),
+
+      new SlashCommandBuilder()
+        .setName('list-role-messages')
+        .setDescription('View active onboarding role message configuration')
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(token);
@@ -94,22 +92,32 @@ client.on(Events.InteractionCreate, async interaction => {
   if (!serverConfig.has(guildId)) serverConfig.set(guildId, {});
   const config = serverConfig.get(guildId);
 
-  if (interaction.commandName === 'setrole') {
+  if (interaction.commandName === 'create-role-message') {
     const role = interaction.options.getRole('role');
-    config.roleId = role.id;
-    await interaction.reply(`✅ Role set to **${role.name}**`);
-  }
-
-  if (interaction.commandName === 'setchannel') {
     const channel = interaction.options.getChannel('channel');
+    const message = interaction.options.getString('message');
+
+    config.roleId = role.id;
     config.channelId = channel.id;
-    await interaction.reply(`✅ Fallback channel set to **${channel.name}**`);
+    config.message = message;
+
+    await interaction.reply(`✅ Role message created:\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
 
-  if (interaction.commandName === 'setmessage') {
-    const message = interaction.options.getString('text');
-    config.message = message;
-    await interaction.reply(`✅ Onboarding message updated`);
+  if (interaction.commandName === 'list-role-messages') {
+    if (!config.roleId || !config.channelId || !config.message) {
+      await interaction.reply({ content: '⚠️ No active role message configuration found.', ephemeral: true });
+      return;
+    }
+
+    const role = interaction.guild.roles.cache.get(config.roleId);
+    const channel = interaction.guild.channels.cache.get(config.channelId);
+    const message = config.message;
+
+    await interaction.reply({
+      content: `📋 Active Role Message Configuration:\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
+      ephemeral: true
+    });
   }
 });
 
@@ -125,38 +133,38 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
 
-  // If user already confirmed, skip
-  if (!onboardingSet.has(newMember.id)) {
-    const username = newMember.nickname || newMember.user.username;
+  if (onboardingSet.has(newMember.id)) {
+    console.log(`⏸ ${newMember.user.tag} already in onboarding. Skipping.`);
+    return;
+  }
 
-    const confirmButton = new ButtonBuilder()
-      .setCustomId(`confirm_read_${newMember.id}`)
-      .setLabel('✅ I’ve read it')
-      .setStyle(ButtonStyle.Success);
+  const username = newMember.nickname || newMember.user.username;
 
-    const row = new ActionRowBuilder().addComponents(confirmButton);
+  const confirmButton = new ButtonBuilder()
+    .setCustomId(`confirm_read_${newMember.id}`)
+    .setLabel('✅ I’ve read it')
+    .setStyle(ButtonStyle.Success);
 
-    const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
-    if (fallbackChannel) {
-      await fallbackChannel.send({
-        content: config.message.replace('{user}', username),
-        components: [row]
-      });
-      console.log(`📨 Onboarding message sent to ${username}`);
-    } else {
-      console.error(`❌ Fallback channel not found`);
-    }
+  const row = new ActionRowBuilder().addComponents(confirmButton);
 
-    onboardingSet.add(newMember.id);
-
-    try {
-      await newMember.roles.remove(config.roleId);
-      console.log(`⏳ Role temporarily removed from ${username} until confirmation`);
-    } catch (err) {
-      console.error(`❌ Failed to remove role from ${username}:`, err);
-    }
+  const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
+  if (fallbackChannel) {
+    await fallbackChannel.send({
+      content: config.message.replace('{user}', username),
+      components: [row]
+    });
+    console.log(`📨 Onboarding message sent to ${username}`);
   } else {
-    console.log(`⏸ ${newMember.user.tag} already confirmed. Skipping role removal.`);
+    console.error(`❌ Fallback channel not found`);
+  }
+
+  onboardingSet.add(newMember.id);
+
+  try {
+    await newMember.roles.remove(config.roleId);
+    console.log(`⏳ Role temporarily removed from ${username} until confirmation`);
+  } catch (err) {
+    console.error(`❌ Failed to remove role from ${username}:`, err);
   }
 });
 
