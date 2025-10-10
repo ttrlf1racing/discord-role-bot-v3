@@ -23,15 +23,12 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-const serverConfig = new Map();
+const serverConfig = new Map();         // Stores role/channel/message per guild
+const confirmedUsers = new Map();       // Tracks confirmed users per guild
 
 // Error handling
-process.on('unhandledRejection', error => {
-  console.error('Unhandled promise rejection:', error);
-});
-process.on('uncaughtException', error => {
-  console.error('Uncaught exception:', error);
-});
+process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
+process.on('uncaughtException', error => console.error('Uncaught exception:', error));
 
 // Token validation
 const rawToken = process.env.DISCORD_TOKEN;
@@ -52,28 +49,19 @@ client.once(Events.ClientReady, async () => {
         .setName('setrole')
         .setDescription('Set the role to assign on confirmation')
         .addRoleOption(opt =>
-          opt.setName('role')
-            .setDescription('Target role')
-            .setRequired(true)
+          opt.setName('role').setDescription('Target role').setRequired(true)
         ),
-
       new SlashCommandBuilder()
         .setName('setchannel')
         .setDescription('Set the fallback channel for onboarding')
         .addChannelOption(opt =>
-          opt.setName('channel')
-            .setDescription('Target channel')
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
+          opt.setName('channel').setDescription('Target channel').addChannelTypes(ChannelType.GuildText).setRequired(true)
         ),
-
       new SlashCommandBuilder()
         .setName('setmessage')
         .setDescription('Set the onboarding message')
         .addStringOption(opt =>
-          opt.setName('text')
-            .setDescription('Message content (use {user} to insert name)')
-            .setRequired(true)
+          opt.setName('text').setDescription('Message content (use {user} to insert name)').setRequired(true)
         )
     ].map(cmd => cmd.toJSON());
 
@@ -131,6 +119,12 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const config = serverConfig.get(guildId);
   if (!config || !config.roleId || !config.channelId || !config.message) return;
 
+  const confirmed = confirmedUsers.has(guildId) && confirmedUsers.get(guildId).has(newMember.id);
+  if (confirmed) {
+    console.log(`✅ ${newMember.user.tag} already confirmed. Skipping removal.`);
+    return;
+  }
+
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
 
@@ -186,8 +180,10 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   try {
-    console.log(`🔄 Attempting to reassign role ${role.name} to ${member.user.tag}`);
     await member.roles.add(role);
+    if (!confirmedUsers.has(guildId)) confirmedUsers.set(guildId, new Set());
+    confirmedUsers.get(guildId).add(memberId);
+
     await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
