@@ -1,3 +1,4 @@
+require('dotenv').config();
 const {
   Client,
   GatewayIntentBits,
@@ -15,13 +16,16 @@ const {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
   ],
   partials: [Partials.Channel]
 });
 
 const serverConfig = new Map();
 
+// Error handling
 process.on('unhandledRejection', error => {
   console.error('Unhandled promise rejection:', error);
 });
@@ -29,6 +33,7 @@ process.on('uncaughtException', error => {
   console.error('Uncaught exception:', error);
 });
 
+// Token validation
 const rawToken = process.env.DISCORD_TOKEN;
 const token = String(rawToken).trim();
 console.log(`🔍 Token received: ${token.slice(0, 10)}...`);
@@ -37,7 +42,8 @@ if (!token || typeof token !== 'string' || token.length < 10) {
   process.exit(1);
 }
 
-client.once('ready', async () => {
+// Bot ready
+client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
   client.guilds.cache.forEach(async guild => {
@@ -81,6 +87,7 @@ client.once('ready', async () => {
   });
 });
 
+// Slash command handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild()) {
@@ -118,7 +125,7 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// Detect role assignment to existing member
+// Role assignment detection
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = serverConfig.get(guildId);
@@ -155,6 +162,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
+// Button interaction handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith('confirm_read_')) return;
@@ -172,13 +180,19 @@ client.on(Events.InteractionCreate, async interaction => {
     return;
   }
 
+  if (interaction.user.id !== memberId) {
+    await interaction.reply({ content: '❌ This button is not for you.', ephemeral: true });
+    return;
+  }
+
   try {
+    console.log(`🔄 Attempting to reassign role ${role.name} to ${member.user.tag}`);
     await member.roles.add(role);
     await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
-    console.log(`🎯 Role ${role.name} assigned to ${member.user.tag}`);
+    console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
     console.error(`❌ Failed to assign role:`, error);
-    await interaction.reply({ content: '❌ Could not assign role.', ephemeral: true });
+    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', ephemeral: true });
   }
 });
 
