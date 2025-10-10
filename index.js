@@ -62,6 +62,26 @@ client.once(Events.ClientReady, async () => {
         ),
 
       new SlashCommandBuilder()
+        .setName('edit-role-message')
+        .setDescription('Edit an existing onboarding role message')
+        .addStringOption(opt =>
+          opt.setName('name').setDescription('New name (optional)').setRequired(false)
+        )
+        .addRoleOption(opt =>
+          opt.setName('role').setDescription('New role (optional)').setRequired(false)
+        )
+        .addChannelOption(opt =>
+          opt.setName('channel').setDescription('New channel (optional)').addChannelTypes(ChannelType.GuildText).setRequired(false)
+        )
+        .addStringOption(opt =>
+          opt.setName('message').setDescription('New message (optional)').setRequired(false)
+        ),
+
+      new SlashCommandBuilder()
+        .setName('delete-role-message')
+        .setDescription('Delete the active onboarding role message'),
+
+      new SlashCommandBuilder()
         .setName('list-role-messages')
         .setDescription('View active onboarding role message configuration')
     ].map(cmd => cmd.toJSON());
@@ -107,6 +127,30 @@ client.on(Events.InteractionCreate, async interaction => {
     config.message = message;
 
     await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
+  }
+
+  if (interaction.commandName === 'edit-role-message') {
+    const name = interaction.options.getString('name');
+    const role = interaction.options.getRole('role');
+    const channel = interaction.options.getChannel('channel');
+    const message = interaction.options.getString('message');
+
+    if (!config.roleId || !config.channelId || !config.message || !config.name) {
+      await interaction.reply({ content: '⚠️ No active config to edit.', ephemeral: true });
+      return;
+    }
+
+    if (name) config.name = name;
+    if (role) config.roleId = role.id;
+    if (channel) config.channelId = channel.id;
+    if (message) config.message = message;
+
+    await interaction.reply(`✅ Role message updated:\n• Name: **${config.name}**\n• Role: **${interaction.guild.roles.cache.get(config.roleId)?.name || 'Unknown'}**\n• Channel: **${interaction.guild.channels.cache.get(config.channelId)?.name || 'Unknown'}**\n• Message: "${config.message}"`);
+  }
+
+  if (interaction.commandName === 'delete-role-message') {
+    serverConfig.delete(guildId);
+    await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
   if (interaction.commandName === 'list-role-messages') {
@@ -177,36 +221,4 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 // Button interaction handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
-  if (!interaction.customId.startsWith('confirm_read_')) return;
-
-  const memberId = interaction.customId.split('_')[2];
-  const guildId = interaction.guild.id;
-  const config = serverConfig.get(guildId);
-  if (!config || !config.roleId) return;
-
-  const member = await interaction.guild.members.fetch(memberId);
-  const role = interaction.guild.roles.cache.get(config.roleId);
-
-  if (!role) {
-    await interaction.reply({ content: '⚠️ Role not found.', ephemeral: true });
-    return;
-  }
-
-  if (interaction.user.id !== memberId) {
-    await interaction.reply({ content: '❌ This button is not for you.', ephemeral: true });
-    return;
-  }
-
-  try {
-    await member.roles.add(role);
-    activeOnboarding.get(guildId)?.delete(memberId);
-
-    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
-    console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
-  } catch (error) {
-    console.error(`❌ Failed to assign role:`, error);
-    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', ephemeral: true });
-  }
-});
-
-client.login(token);
+  if (!interaction.customId.startsWith('confirm_read
