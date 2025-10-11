@@ -23,8 +23,8 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-const serverConfig = new Map();           // Stores role/channel/message/name per guild
-const activeOnboarding = new Map();       // Tracks users currently in onboarding flow
+const serverConfig = new Map();
+const activeOnboarding = new Map();
 
 // Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
@@ -100,14 +100,14 @@ client.once(Events.ClientReady, async () => {
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild()) {
-    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', ephemeral: true });
+    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', flags: 1 << 6 });
     return;
   }
 
   const member = interaction.member;
   const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin');
   if (!isAdmin) {
-    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', ephemeral: true });
+    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', flags: 1 << 6 });
     return;
   }
 
@@ -136,7 +136,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const message = interaction.options.getString('message');
 
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({ content: '⚠️ No active config to edit.', ephemeral: true });
+      await interaction.reply({ content: '⚠️ No active config to edit.', flags: 1 << 6 });
       return;
     }
 
@@ -155,7 +155,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.commandName === 'list-role-messages') {
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({ content: '⚠️ No active role message configuration found.', ephemeral: true });
+      await interaction.reply({ content: '⚠️ No active role message configuration found.', flags: 1 << 6 });
       return;
     }
 
@@ -166,7 +166,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     await interaction.reply({
       content: `📋 Active Role Message Configuration:\n• Name: **${name}**\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
-      ephemeral: true
+      flags: 1 << 6
     });
   }
 });
@@ -232,12 +232,12 @@ client.on(Events.InteractionCreate, async interaction => {
   const role = interaction.guild.roles.cache.get(config.roleId);
 
   if (!role) {
-    await interaction.reply({ content: '⚠️ Role not found.', ephemeral: true });
+    await interaction.reply({ content: '⚠️ Role not found.', flags: 1 << 6 });
     return;
   }
 
   if (interaction.user.id !== memberId) {
-    await interaction.reply({ content: '❌ This button is not for you.', ephemeral: true });
+    await interaction.reply({ content: '❌ This button is not for you.', flags: 1 << 6 });
     return;
   }
 
@@ -245,11 +245,11 @@ client.on(Events.InteractionCreate, async interaction => {
     await member.roles.add(role);
     activeOnboarding.get(guildId)?.delete(memberId);
 
-    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
+    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', flags: 1 << 6 });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
     console.error(`❌ Failed to assign role:`, error);
-    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', ephemeral: true });
+    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', flags: 1 << 6 });
   }
 });
 
