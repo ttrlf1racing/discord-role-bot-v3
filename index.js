@@ -39,61 +39,99 @@ if (!token || typeof token !== 'string' || token.length < 10) {
   process.exit(1);
 }
 
+// Helper: get all commands defined in code
+function getLocalCommands() {
+  return [
+    new SlashCommandBuilder()
+      .setName('create-role-message')
+      .setDescription('Configure onboarding role, channel, and message')
+      .addStringOption(opt =>
+        opt.setName('name').setDescription('Name for this onboarding flow').setRequired(true)
+      )
+      .addRoleOption(opt =>
+        opt.setName('role').setDescription('Role to assign after confirmation').setRequired(true)
+      )
+      .addChannelOption(opt =>
+        opt.setName('channel').setDescription('Channel to post onboarding message').addChannelTypes(ChannelType.GuildText).setRequired(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('message').setDescription('Message content (use {user} to insert name)').setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName('edit-role-message')
+      .setDescription('Edit an existing onboarding role message')
+      .addStringOption(opt =>
+        opt.setName('name').setDescription('New name (optional)').setRequired(false)
+      )
+      .addRoleOption(opt =>
+        opt.setName('role').setDescription('New role (optional)').setRequired(false)
+      )
+      .addChannelOption(opt =>
+        opt.setName('channel').setDescription('New channel (optional)').addChannelTypes(ChannelType.GuildText).setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('message').setDescription('New message (optional)').setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName('delete-role-message')
+      .setDescription('Delete the active onboarding role message'),
+
+    new SlashCommandBuilder()
+      .setName('list-role-messages')
+      .setDescription('View active onboarding role message configuration')
+  ].map(cmd => cmd.toJSON());
+}
+
+// Register or update commands only if necessary
+async function syncGuildCommands(client, guild) {
+  const rest = new REST({ version: '10' }).setToken(token);
+  const localCommands = getLocalCommands();
+
+  try {
+    const existing = await rest.get(
+      Routes.applicationGuildCommands(client.user.id, guild.id)
+    );
+
+    const existingMap = new Map(existing.map(c => [c.name, c]));
+    let updated = 0;
+    let added = 0;
+
+    for (const command of localCommands) {
+      const existingCmd = existingMap.get(command.name);
+
+      if (!existingCmd) {
+        await rest.post(Routes.applicationGuildCommands(client.user.id, guild.id), { body: command });
+        added++;
+        console.log(`🆕 Added new command '${command.name}' to ${guild.name}`);
+      } else {
+        // Compare command JSONs to detect differences
+        if (JSON.stringify(existingCmd) !== JSON.stringify(command)) {
+          await rest.patch(
+            Routes.applicationGuildCommand(client.user.id, guild.id, existingCmd.id),
+            { body: command }
+          );
+          updated++;
+          console.log(`🔄 Updated command '${command.name}' in ${guild.name}`);
+        }
+      }
+    }
+
+    console.log(
+      `✅ Synced commands for ${guild.name}: ${added} added, ${updated} updated, ${existing.length} total`
+    );
+  } catch (err) {
+    console.error(`❌ Failed to sync commands for ${guild.name}:`, err);
+  }
+}
+
 // Bot ready
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-
-  client.guilds.cache.forEach(async guild => {
-    const commands = [
-      new SlashCommandBuilder()
-        .setName('create-role-message')
-        .setDescription('Configure onboarding role, channel, and message')
-        .addStringOption(opt =>
-          opt.setName('name').setDescription('Name for this onboarding flow').setRequired(true)
-        )
-        .addRoleOption(opt =>
-          opt.setName('role').setDescription('Role to assign after confirmation').setRequired(true)
-        )
-        .addChannelOption(opt =>
-          opt.setName('channel').setDescription('Channel to post onboarding message').addChannelTypes(ChannelType.GuildText).setRequired(true)
-        )
-        .addStringOption(opt =>
-          opt.setName('message').setDescription('Message content (use {user} to insert name)').setRequired(true)
-        ),
-
-      new SlashCommandBuilder()
-        .setName('edit-role-message')
-        .setDescription('Edit an existing onboarding role message')
-        .addStringOption(opt =>
-          opt.setName('name').setDescription('New name (optional)').setRequired(false)
-        )
-        .addRoleOption(opt =>
-          opt.setName('role').setDescription('New role (optional)').setRequired(false)
-        )
-        .addChannelOption(opt =>
-          opt.setName('channel').setDescription('New channel (optional)').addChannelTypes(ChannelType.GuildText).setRequired(false)
-        )
-        .addStringOption(opt =>
-          opt.setName('message').setDescription('New message (optional)').setRequired(false)
-        ),
-
-      new SlashCommandBuilder()
-        .setName('delete-role-message')
-        .setDescription('Delete the active onboarding role message'),
-
-      new SlashCommandBuilder()
-        .setName('list-role-messages')
-        .setDescription('View active onboarding role message configuration')
-    ].map(cmd => cmd.toJSON());
-
-    const rest = new REST({ version: '10' }).setToken(token);
-    try {
-      await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
-      console.log(`✅ Slash commands registered for ${guild.name}`);
-    } catch (err) {
-      console.error(`❌ Failed to register commands for ${guild.name}:`, err);
-    }
-  });
+  for (const guild of client.guilds.cache.values()) {
+    await syncGuildCommands(client, guild);
+  }
 });
 
 // Slash command handler
