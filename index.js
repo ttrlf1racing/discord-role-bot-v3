@@ -12,6 +12,9 @@ const {
   SlashCommandBuilder,
   ChannelType
 } = require('discord.js');
+const fs = require('fs/promises'); // 🌟 ADDED: File system module for persistence
+
+const CONFIG_FILE = 'serverConfig.json'; // 🌟 ADDED: File name for saving config
 
 const client = new Client({
   intents: [
@@ -23,8 +26,41 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-const serverConfig = new Map();           // Stores role/channel/message/name per guild
-const activeOnboarding = new Map();       // Tracks users currently in onboarding flow
+const serverConfig = new Map();         // Stores role/channel/message/name per guild
+const activeOnboarding = new Map();     // Tracks users currently in onboarding flow
+
+// 🌟 NEW: Functions for Persistent Storage
+// Function to save the current configuration to a file
+async function saveConfig() {
+  try {
+    // Convert Map to an object for JSON serialization
+    const data = JSON.stringify(Object.fromEntries(serverConfig), null, 2);
+    await fs.writeFile(CONFIG_FILE, data);
+    console.log('✅ Server configuration saved to disk.');
+  } catch (error) {
+    console.error('❌ Failed to save configuration:', error);
+  }
+}
+
+// Function to load the configuration from a file on startup
+async function loadConfig() {
+  try {
+    const data = await fs.readFile(CONFIG_FILE, 'utf8');
+    const parsedData = JSON.parse(data);
+    // Convert the parsed object back into a Map
+    for (const [key, value] of Object.entries(parsedData)) {
+      serverConfig.set(key, value);
+    }
+    console.log(`✅ Server configuration loaded from disk. Found ${serverConfig.size} guild configs.`);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log('⚠️ No configuration file found. Starting fresh.');
+    } else {
+      console.error('❌ Failed to load configuration:', error);
+    }
+  }
+}
+// 🌟 END NEW FUNCTIONS
 
 // Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
@@ -105,7 +141,9 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   const member = interaction.member;
-  const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin');
+  // NOTE: This isAdmin check is brittle as it relies on a specific role name "Admin".
+  // A better check would be checking for the 'Administrator' permission.
+  const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin'); 
   if (!isAdmin) {
     await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', ephemeral: true });
     return;
@@ -126,6 +164,7 @@ client.on(Events.InteractionCreate, async interaction => {
     config.channelId = channel.id;
     config.message = message;
 
+    await saveConfig(); // 🌟 ADDED: Save config after creation
     await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
 
@@ -140,16 +179,22 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (name) config.name = name;
-    if (role) config.roleId = role.id;
-    if (channel) config.channelId = channel.id;
-    if (message) config.message = message;
+    let changed = false;
+    if (name) { config.name = name; changed = true; }
+    if (role) { config.roleId = role.id; changed = true; }
+    if (channel) { config.channelId = channel.id; changed = true; }
+    if (message) { config.message = message; changed = true; }
+
+    if (changed) {
+      await saveConfig(); // 🌟 ADDED: Save config after edit
+    }
 
     await interaction.reply(`✅ Role message updated:\n• Name: **${config.name}**\n• Role: **${interaction.guild.roles.cache.get(config.roleId)?.name || 'Unknown'}**\n• Channel: **${interaction.guild.channels.cache.get(config.channelId)?.name || 'Unknown'}**\n• Message: "${config.message}"`);
   }
 
   if (interaction.commandName === 'delete-role-message') {
     serverConfig.delete(guildId);
+    await saveConfig(); // 🌟 ADDED: Save config after deletion
     await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
@@ -253,5 +298,10 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// ✅ Start the bot
-client.login(token);
+// ✅ Start the bot - wrapped in an async function to load config first
+async function startBot() {
+    await loadConfig(); // 🌟 ADDED: Load saved config before logging in
+    client.login(token);
+}
+
+startBot(); // 🌟 MODIFIED: Call the new async start function
