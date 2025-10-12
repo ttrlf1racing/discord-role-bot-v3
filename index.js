@@ -12,6 +12,7 @@ const {
   SlashCommandBuilder,
   ChannelType
 } = require('discord.js');
+const { MessageFlags } = require('discord-api-types/v10'); // ✅ Optional: for clarity
 
 const kv = require('./kvRedis');
 
@@ -25,11 +26,9 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
 process.on('uncaughtException', error => console.error('Uncaught exception:', error));
 
-// Token validation
 const rawToken = process.env.DISCORD_TOKEN;
 const token = String(rawToken).trim();
 console.log(`🔍 Token received: ${token.slice(0, 10)}...`);
@@ -38,7 +37,6 @@ if (!token || typeof token !== 'string' || token.length < 10) {
   process.exit(1);
 }
 
-// Bot ready
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
@@ -94,17 +92,24 @@ client.once(Events.ClientReady, async () => {
     }
   });
 });
+
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild()) {
-    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', ephemeral: true });
+    await interaction.reply({
+      content: '❌ Commands must be used in a server, not in DMs.',
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
   const member = interaction.member;
   const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin');
   if (!isAdmin) {
-    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', ephemeral: true });
+    await interaction.reply({
+      content: '❌ You must have the **Admin** role to use this command.',
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
@@ -135,7 +140,10 @@ client.on(Events.InteractionCreate, async interaction => {
     const message = interaction.options.getString('message');
 
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({ content: '⚠️ No active config to edit.', ephemeral: true });
+      await interaction.reply({
+        content: '⚠️ No active config to edit.',
+        flags: MessageFlags.Ephemeral
+      });
       return;
     }
 
@@ -156,7 +164,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.commandName === 'list-role-messages') {
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({ content: '⚠️ No active role message configuration found.', ephemeral: true });
+      await interaction.reply({
+        content: '⚠️ No active role message configuration found.',
+        flags: MessageFlags.Ephemeral
+      });
       return;
     }
 
@@ -167,18 +178,17 @@ client.on(Events.InteractionCreate, async interaction => {
 
     await interaction.reply({
       content: `📋 Active Role Message Configuration:\n• Name: **${name}**\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 });
-// Role assignment detection
+
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = await kv.getConfig(guildId);
   if (!config || !config.roleId || !config.channelId || !config.message) return;
 
   const onboardingSet = await kv.getOnboarding(guildId);
-
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
 
@@ -188,15 +198,14 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 
   const username = newMember.nickname || newMember.user.username;
-
   const confirmButton = new ButtonBuilder()
     .setCustomId(`confirm_read_${newMember.id}`)
     .setLabel('✅ I’ve read it')
     .setStyle(ButtonStyle.Success);
 
   const row = new ActionRowBuilder().addComponents(confirmButton);
-
   const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
+
   if (fallbackChannel) {
     await fallbackChannel.send({
       content: config.message.replace('{user}', username),
@@ -218,26 +227,32 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-// Button interaction handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith('confirm_read')) return;
 
   const memberId = interaction.customId.split('_')[2];
   const guildId = interaction.guild.id;
-  const config = await kv.getConfig(guildId);
+  const config
+    const config = await kv.getConfig(guildId);
   if (!config || !config.roleId) return;
 
   const member = await interaction.guild.members.fetch(memberId);
   const role = interaction.guild.roles.cache.get(config.roleId);
 
   if (!role) {
-    await interaction.reply({ content: '⚠️ Role not found.', ephemeral: true });
+    await interaction.reply({
+      content: '⚠️ Role not found.',
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
   if (interaction.user.id !== memberId) {
-    await interaction.reply({ content: '❌ This button is not for you.', ephemeral: true });
+    await interaction.reply({
+      content: '❌ This button is not for you.',
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
@@ -247,11 +262,17 @@ client.on(Events.InteractionCreate, async interaction => {
 
   try {
     await member.roles.add(role);
-    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
+    await interaction.reply({
+      content: '✅ Role assigned. Welcome aboard!',
+      flags: MessageFlags.Ephemeral
+    });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
     console.error(`❌ Failed to assign role:`, error);
-    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', ephemeral: true });
+    await interaction.reply({
+      content: '❌ Could not assign role. Please check bot permissions.',
+      flags: MessageFlags.Ephemeral
+    });
   }
 });
 
