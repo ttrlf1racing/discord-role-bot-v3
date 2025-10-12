@@ -13,9 +13,7 @@ const {
   ChannelType
 } = require('discord.js');
 
-const kv = require('./kvStore');
-const serverConfig = kv.loadServerConfig();
-const activeOnboarding = kv.loadActiveOnboarding();
+const kv = require('./kvRedis');
 
 const client = new Client({
   intents: [
@@ -96,7 +94,6 @@ client.once(Events.ClientReady, async () => {
     }
   });
 });
-// Slash command handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild()) {
@@ -112,8 +109,8 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   const guildId = interaction.guild.id;
-  if (!serverConfig.has(guildId)) serverConfig.set(guildId, {});
-  const config = serverConfig.get(guildId);
+  let config = await kv.getConfig(guildId);
+  if (!config) config = {};
 
   if (interaction.commandName === 'create-role-message') {
     const name = interaction.options.getString('name');
@@ -126,8 +123,7 @@ client.on(Events.InteractionCreate, async interaction => {
     config.channelId = channel.id;
     config.message = message;
 
-    serverConfig.set(guildId, config);
-    kv.saveServerConfig(serverConfig);
+    await kv.setConfig(guildId, config);
 
     await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
@@ -148,14 +144,13 @@ client.on(Events.InteractionCreate, async interaction => {
     if (channel) config.channelId = channel.id;
     if (message) config.message = message;
 
-    kv.saveServerConfig(serverConfig);
+    await kv.setConfig(guildId, config);
 
     await interaction.reply(`✅ Role message updated:\n• Name: **${config.name}**\n• Role: **${interaction.guild.roles.cache.get(config.roleId)?.name || 'Unknown'}**\n• Channel: **${interaction.guild.channels.cache.get(config.channelId)?.name || 'Unknown'}**\n• Message: "${config.message}"`);
   }
 
   if (interaction.commandName === 'delete-role-message') {
-    serverConfig.delete(guildId);
-    kv.saveServerConfig(serverConfig);
+    await kv.deleteConfig(guildId);
     await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
@@ -179,11 +174,10 @@ client.on(Events.InteractionCreate, async interaction => {
 // Role assignment detection
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
-  const config = serverConfig.get(guildId);
+  const config = await kv.getConfig(guildId);
   if (!config || !config.roleId || !config.channelId || !config.message) return;
 
-  if (!activeOnboarding.has(guildId)) activeOnboarding.set(guildId, new Set());
-  const onboardingSet = activeOnboarding.get(guildId);
+  const onboardingSet = await kv.getOnboarding(guildId);
 
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
@@ -214,7 +208,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 
   onboardingSet.add(newMember.id);
-  kv.saveActiveOnboarding(activeOnboarding);
+  await kv.setOnboarding(guildId, onboardingSet);
 
   try {
     await newMember.roles.remove(config.roleId);
@@ -231,7 +225,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   const memberId = interaction.customId.split('_')[2];
   const guildId = interaction.guild.id;
-  const config = serverConfig.get(guildId);
+  const config = await kv.getConfig(guildId);
   if (!config || !config.roleId) return;
 
   const member = await interaction.guild.members.fetch(memberId);
@@ -247,11 +241,12 @@ client.on(Events.InteractionCreate, async interaction => {
     return;
   }
 
+  const onboardingSet = await kv.getOnboarding(guildId);
+  onboardingSet.delete(memberId);
+  await kv.setOnboarding(guildId, onboardingSet);
+
   try {
     await member.roles.add(role);
-    activeOnboarding.get(guildId)?.delete(memberId);
-    kv.saveActiveOnboarding(activeOnboarding);
-
     await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
@@ -262,4 +257,3 @@ client.on(Events.InteractionCreate, async interaction => {
 
 // ✅ Start the bot
 client.login(token);
-
