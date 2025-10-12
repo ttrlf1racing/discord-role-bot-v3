@@ -206,6 +206,13 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
   const row = new ActionRowBuilder().addComponents(confirmButton);
   const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
+if (fallbackChannel) {
+  await fallbackChannel.send({
+    content: config.message.replace('{user}', username),
+    components: [row]
+  });
+  console.log(`📨 Onboarding message sent to ${username}`);
+}
 
   let messageSent = false;
   if (fallbackChannel) {
