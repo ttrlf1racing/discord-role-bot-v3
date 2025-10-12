@@ -260,9 +260,15 @@ client.on(Events.InteractionCreate, async interaction => {
     return;
   }
 
-  const onboardingSet = await kv.getOnboarding(guildId);
+const onboardingSet = await kv.getOnboarding(guildId);
+if (onboardingSet.has(memberId)) {
   onboardingSet.delete(memberId);
   await kv.setOnboarding(guildId, onboardingSet);
+  console.log(`🧼 Cleared onboarding state for ${member.user.tag}`);
+} else {
+  console.log(`ℹ️ ${member.user.tag} was not in onboarding set`);
+}
+
 
   try {
     await member.roles.add(role);
