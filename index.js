@@ -14,6 +14,8 @@ const {
 } = require('discord.js');
 const { MessageFlags } = require('discord-api-types/v10');
 const kv = require('./kvRedis'); // Redis-backed config and onboarding store
+
+const recentlyConfirmed = new Map(); // guildId → Set of userIds
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -111,7 +113,6 @@ client.on(Events.InteractionCreate, async interaction => {
   let config = await kv.getConfig(guildId);
   if (!config) config = {};
 
-  // === Command: create-role-message ===
   if (interaction.commandName === 'create-role-message') {
     const name = interaction.options.getString('name');
     const role = interaction.options.getRole('role');
@@ -128,7 +129,6 @@ client.on(Events.InteractionCreate, async interaction => {
     await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
 
-  // === Command: edit-role-message ===
   if (interaction.commandName === 'edit-role-message') {
     const name = interaction.options.getString('name');
     const role = interaction.options.getRole('role');
@@ -153,14 +153,12 @@ client.on(Events.InteractionCreate, async interaction => {
     await interaction.reply(`✅ Role message updated:\n• Name: **${config.name}**\n• Role: **${interaction.guild.roles.cache.get(config.roleId)?.name || 'Unknown'}**\n• Channel: **${interaction.guild.channels.cache.get(config.channelId)?.name || 'Unknown'}**\n• Message: "${config.message}"`);
   }
 
-  // === Command: delete-role-message ===
   if (interaction.commandName === 'delete-role-message') {
     await kv.deleteConfig(guildId);
     await kv.setOnboarding(guildId, new Set());
     await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
-  // === Command: list-role-messages ===
   if (interaction.commandName === 'list-role-messages') {
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
       await interaction.reply({
@@ -189,6 +187,11 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const onboardingSet = await kv.getOnboarding(guildId);
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
+
+  if (recentlyConfirmed.has(guildId) && recentlyConfirmed.get(guildId).has(newMember.id)) {
+    console.log(`🛑 Skipping update for ${newMember.user.tag} — recently confirmed`);
+    return;
+  }
 
   if (onboardingSet.has(newMember.id)) {
     console.log(`⏸ ${newMember.user.tag} already in onboarding. Skipping.`);
@@ -260,15 +263,74 @@ client.on(Events.InteractionCreate, async interaction => {
     return;
   }
 
-const onboardingSet = await kv.getOnboarding(guildId);
-if (onboardingSet.has(memberId)) {
-  onboardingSet.delete(memberId);
-  await kv.setOnboarding(guildId, onboardingSet);
-  console.log(`🧼 Cleared onboarding state for ${member.user.tag}`);
-} else {
-  console.log(`ℹ️ ${member.user.tag} was not in onboarding set`);
-}
+  const onboardingSet = await kv.getOnboarding(guildId);
+  if (onboardingSet.has(memberId)) {
+    onboardingSet.delete(memberId);
+    await kv.setOnboarding(guildId, onboardingSet);
+    console.log(`🧼 Cleared onboarding state for ${member.user.tag}`);
+  }
 
+  if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
+  recentlyConfirmed.get(guildId).add(memberId);
+  setTimeout(() => {
+    recentlyConfirmed.get(guildId).delete(memberId);
+  }, 5000);
+
+  try {
+    await member.roles.add(role);
+    await interaction.reply({
+      content: '✅ Role assigned. Welcome aboard!',
+      flags: MessageFlags.Ephemeral
+    });
+    console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
+  } catch (error) {
+    console.error(`❌ Failed to assign role:`, error);
+    await interaction.reply({
+      content: '❌ Could not assign role. Please check bot permissions.',
+      flags: MessageFlags.Ephemeral
+    });
+  }
+});
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('confirm_read')) return;
+
+  const memberId = interaction.customId.split('_')[2];
+  const guildId = interaction.guild.id;
+  const config = await kv.getConfig(guildId);
+  if (!config || !config.roleId) return;
+
+  const member = await interaction.guild.members.fetch(memberId);
+  const role = interaction.guild.roles.cache.get(config.roleId);
+
+  if (!role) {
+    await interaction.reply({
+      content: '⚠️ Role not found.',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (interaction.user.id !== memberId) {
+    await interaction.reply({
+      content: '❌ This button is not for you.',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const onboardingSet = await kv.getOnboarding(guildId);
+  if (onboardingSet.has(memberId)) {
+    onboardingSet.delete(memberId);
+    await kv.setOnboarding(guildId, onboardingSet);
+    console.log(`🧼 Cleared onboarding state for ${member.user.tag}`);
+  }
+
+  if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
+  recentlyConfirmed.get(guildId).add(memberId);
+  setTimeout(() => {
+    recentlyConfirmed.get(guildId).delete(memberId);
+  }, 5000);
 
   try {
     await member.roles.add(role);
