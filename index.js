@@ -13,7 +13,7 @@ const {
   ChannelType
 } = require('discord.js');
 const { MessageFlags } = require('discord-api-types/v10');
-const kv = require('./kvRedis');
+const kv = require('./kvRedis'); // Redis-backed config and onboarding store
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -156,6 +156,7 @@ client.on(Events.InteractionCreate, async interaction => {
   // === Command: delete-role-message ===
   if (interaction.commandName === 'delete-role-message') {
     await kv.deleteConfig(guildId);
+    await kv.setOnboarding(guildId, new Set());
     await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
@@ -279,4 +280,3 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 client.login(token);
-
