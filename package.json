@@ -1,16 +1,20 @@
 {
   "name": "discord-role-bot-v3",
   "version": "1.0.0",
+  "description": "Discord onboarding bot with Redis persistence",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.11.0",
-    "dotenv": "^16.0.3"
+    "dotenv": "^16.3.1",
+    "ioredis": "^5.3.2"
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT"
 }
-
