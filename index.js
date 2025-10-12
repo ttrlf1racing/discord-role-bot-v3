@@ -12,10 +12,7 @@ const {
   SlashCommandBuilder,
   ChannelType
 } = require('discord.js');
-const { MessageFlags } = require('discord-api-types/v10'); // ✅ For ephemeral flag
-const kv = require('./kvRedis');
 
-// === PART 2: Client Initialization ===
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -26,11 +23,14 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// === PART 3: Error Handling ===
+const serverConfig = new Map();           // Stores role/channel/message/name per guild
+const activeOnboarding = new Map();       // Tracks users currently in onboarding flow
+
+// Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
 process.on('uncaughtException', error => console.error('Uncaught exception:', error));
 
-// === PART 4: Token Validation ===
+// Token validation
 const rawToken = process.env.DISCORD_TOKEN;
 const token = String(rawToken).trim();
 console.log(`🔍 Token received: ${token.slice(0, 10)}...`);
@@ -38,6 +38,8 @@ if (!token || typeof token !== 'string' || token.length < 10) {
   console.error('❌ DISCORD_TOKEN is missing or malformed. Check Railway Variables.');
   process.exit(1);
 }
+
+// Bot ready
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
@@ -93,31 +95,26 @@ client.once(Events.ClientReady, async () => {
     }
   });
 });
+
+// Slash command handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild()) {
-    await interaction.reply({
-      content: '❌ Commands must be used in a server, not in DMs.',
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', ephemeral: true });
     return;
   }
 
   const member = interaction.member;
   const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin');
   if (!isAdmin) {
-    await interaction.reply({
-      content: '❌ You must have the **Admin** role to use this command.',
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', ephemeral: true });
     return;
   }
 
   const guildId = interaction.guild.id;
-  let config = await kv.getConfig(guildId);
-  if (!config) config = {};
+  if (!serverConfig.has(guildId)) serverConfig.set(guildId, {});
+  const config = serverConfig.get(guildId);
 
-  // === Command: create-role-message ===
   if (interaction.commandName === 'create-role-message') {
     const name = interaction.options.getString('name');
     const role = interaction.options.getRole('role');
@@ -129,12 +126,9 @@ client.on(Events.InteractionCreate, async interaction => {
     config.channelId = channel.id;
     config.message = message;
 
-    await kv.setConfig(guildId, config);
-
     await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
 
-  // === Command: edit-role-message ===
   if (interaction.commandName === 'edit-role-message') {
     const name = interaction.options.getString('name');
     const role = interaction.options.getRole('role');
@@ -142,10 +136,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const message = interaction.options.getString('message');
 
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({
-        content: '⚠️ No active config to edit.',
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.reply({ content: '⚠️ No active config to edit.', ephemeral: true });
       return;
     }
 
@@ -154,24 +145,17 @@ client.on(Events.InteractionCreate, async interaction => {
     if (channel) config.channelId = channel.id;
     if (message) config.message = message;
 
-    await kv.setConfig(guildId, config);
-
     await interaction.reply(`✅ Role message updated:\n• Name: **${config.name}**\n• Role: **${interaction.guild.roles.cache.get(config.roleId)?.name || 'Unknown'}**\n• Channel: **${interaction.guild.channels.cache.get(config.channelId)?.name || 'Unknown'}**\n• Message: "${config.message}"`);
   }
 
-  // === Command: delete-role-message ===
   if (interaction.commandName === 'delete-role-message') {
-    await kv.deleteConfig(guildId);
+    serverConfig.delete(guildId);
     await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
-  // === Command: list-role-messages ===
   if (interaction.commandName === 'list-role-messages') {
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({
-        content: '⚠️ No active role message configuration found.',
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.reply({ content: '⚠️ No active role message configuration found.', ephemeral: true });
       return;
     }
 
@@ -182,16 +166,20 @@ client.on(Events.InteractionCreate, async interaction => {
 
     await interaction.reply({
       content: `📋 Active Role Message Configuration:\n• Name: **${name}**\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
-      flags: MessageFlags.Ephemeral
+      ephemeral: true
     });
   }
 });
+
+// Role assignment detection
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
-  const config = await kv.getConfig(guildId);
+  const config = serverConfig.get(guildId);
   if (!config || !config.roleId || !config.channelId || !config.message) return;
 
-  const onboardingSet = await kv.getOnboarding(guildId);
+  if (!activeOnboarding.has(guildId)) activeOnboarding.set(guildId, new Set());
+  const onboardingSet = activeOnboarding.get(guildId);
+
   const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
   if (!addedRoles.has(config.roleId)) return;
 
@@ -201,14 +189,15 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 
   const username = newMember.nickname || newMember.user.username;
+
   const confirmButton = new ButtonBuilder()
     .setCustomId(`confirm_read_${newMember.id}`)
     .setLabel('✅ I’ve read it')
     .setStyle(ButtonStyle.Success);
 
   const row = new ActionRowBuilder().addComponents(confirmButton);
-  const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
 
+  const fallbackChannel = newMember.guild.channels.cache.get(config.channelId);
   if (fallbackChannel) {
     await fallbackChannel.send({
       content: config.message.replace('{user}', username),
@@ -220,7 +209,6 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 
   onboardingSet.add(newMember.id);
-  await kv.setOnboarding(guildId, onboardingSet);
 
   try {
     await newMember.roles.remove(config.roleId);
@@ -229,51 +217,41 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     console.error(`❌ Failed to remove role from ${username}:`, err);
   }
 });
+
+// Button interaction handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith('confirm_read')) return;
 
   const memberId = interaction.customId.split('_')[2];
   const guildId = interaction.guild.id;
-  const config = await kv.getConfig(guildId);
+  const config = serverConfig.get(guildId);
   if (!config || !config.roleId) return;
 
   const member = await interaction.guild.members.fetch(memberId);
   const role = interaction.guild.roles.cache.get(config.roleId);
 
   if (!role) {
-    await interaction.reply({
-      content: '⚠️ Role not found.',
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: '⚠️ Role not found.', ephemeral: true });
     return;
   }
 
   if (interaction.user.id !== memberId) {
-    await interaction.reply({
-      content: '❌ This button is not for you.',
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: '❌ This button is not for you.', ephemeral: true });
     return;
   }
 
-  const onboardingSet = await kv.getOnboarding(guildId);
-  onboardingSet.delete(memberId);
-  await kv.setOnboarding(guildId, onboardingSet);
-
   try {
     await member.roles.add(role);
-    await interaction.reply({
-      content: '✅ Role assigned. Welcome aboard!',
-      flags: MessageFlags.Ephemeral
-    });
+    activeOnboarding.get(guildId)?.delete(memberId);
+
+    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
     console.error(`❌ Failed to assign role:`, error);
-    await interaction.reply({
-      content: '❌ Could not assign role. Please check bot permissions.',
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', ephemeral: true });
   }
 });
+
+// ✅ Start the bot
 client.login(token);
