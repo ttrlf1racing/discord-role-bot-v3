@@ -13,6 +13,10 @@ const {
   ChannelType
 } = require('discord.js');
 
+const kv = require('./kvStore');
+const serverConfig = kv.loadServerConfig();
+const activeOnboarding = kv.loadActiveOnboarding();
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -22,9 +26,6 @@ const client = new Client({
   ],
   partials: [Partials.Channel]
 });
-
-const serverConfig = new Map();
-const activeOnboarding = new Map();
 
 // Error handling
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
@@ -39,113 +40,74 @@ if (!token || typeof token !== 'string' || token.length < 10) {
   process.exit(1);
 }
 
-// Helper: get all commands defined in code
-function getLocalCommands() {
-  return [
-    new SlashCommandBuilder()
-      .setName('create-role-message')
-      .setDescription('Configure onboarding role, channel, and message')
-      .addStringOption(opt =>
-        opt.setName('name').setDescription('Name for this onboarding flow').setRequired(true)
-      )
-      .addRoleOption(opt =>
-        opt.setName('role').setDescription('Role to assign after confirmation').setRequired(true)
-      )
-      .addChannelOption(opt =>
-        opt.setName('channel').setDescription('Channel to post onboarding message').addChannelTypes(ChannelType.GuildText).setRequired(true)
-      )
-      .addStringOption(opt =>
-        opt.setName('message').setDescription('Message content (use {user} to insert name)').setRequired(true)
-      ),
-
-    new SlashCommandBuilder()
-      .setName('edit-role-message')
-      .setDescription('Edit an existing onboarding role message')
-      .addStringOption(opt =>
-        opt.setName('name').setDescription('New name (optional)').setRequired(false)
-      )
-      .addRoleOption(opt =>
-        opt.setName('role').setDescription('New role (optional)').setRequired(false)
-      )
-      .addChannelOption(opt =>
-        opt.setName('channel').setDescription('New channel (optional)').addChannelTypes(ChannelType.GuildText).setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('message').setDescription('New message (optional)').setRequired(false)
-      ),
-
-    new SlashCommandBuilder()
-      .setName('delete-role-message')
-      .setDescription('Delete the active onboarding role message'),
-
-    new SlashCommandBuilder()
-      .setName('list-role-messages')
-      .setDescription('View active onboarding role message configuration')
-  ].map(cmd => cmd.toJSON());
-}
-
-// Register or update commands only if necessary
-async function syncGuildCommands(client, guild) {
-  const rest = new REST({ version: '10' }).setToken(token);
-  const localCommands = getLocalCommands();
-
-  try {
-    const existing = await rest.get(
-      Routes.applicationGuildCommands(client.user.id, guild.id)
-    );
-
-    const existingMap = new Map(existing.map(c => [c.name, c]));
-    let updated = 0;
-    let added = 0;
-
-    for (const command of localCommands) {
-      const existingCmd = existingMap.get(command.name);
-
-      if (!existingCmd) {
-        await rest.post(Routes.applicationGuildCommands(client.user.id, guild.id), { body: command });
-        added++;
-        console.log(`🆕 Added new command '${command.name}' to ${guild.name}`);
-      } else {
-        // Compare command JSONs to detect differences
-        if (JSON.stringify(existingCmd) !== JSON.stringify(command)) {
-          await rest.patch(
-            Routes.applicationGuildCommand(client.user.id, guild.id, existingCmd.id),
-            { body: command }
-          );
-          updated++;
-          console.log(`🔄 Updated command '${command.name}' in ${guild.name}`);
-        }
-      }
-    }
-
-    console.log(
-      `✅ Synced commands for ${guild.name}: ${added} added, ${updated} updated, ${existing.length} total`
-    );
-  } catch (err) {
-    console.error(`❌ Failed to sync commands for ${guild.name}:`, err);
-  }
-}
-
 // Bot ready
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  for (const guild of client.guilds.cache.values()) {
-    await syncGuildCommands(client, guild);
-  }
-});
 
+  client.guilds.cache.forEach(async guild => {
+    const commands = [
+      new SlashCommandBuilder()
+        .setName('create-role-message')
+        .setDescription('Configure onboarding role, channel, and message')
+        .addStringOption(opt =>
+          opt.setName('name').setDescription('Name for this onboarding flow').setRequired(true)
+        )
+        .addRoleOption(opt =>
+          opt.setName('role').setDescription('Role to assign after confirmation').setRequired(true)
+        )
+        .addChannelOption(opt =>
+          opt.setName('channel').setDescription('Channel to post onboarding message').addChannelTypes(ChannelType.GuildText).setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName('message').setDescription('Message content (use {user} to insert name)').setRequired(true)
+        ),
+
+      new SlashCommandBuilder()
+        .setName('edit-role-message')
+        .setDescription('Edit an existing onboarding role message')
+        .addStringOption(opt =>
+          opt.setName('name').setDescription('New name (optional)').setRequired(false)
+        )
+        .addRoleOption(opt =>
+          opt.setName('role').setDescription('New role (optional)').setRequired(false)
+        )
+        .addChannelOption(opt =>
+          opt.setName('channel').setDescription('New channel (optional)').addChannelTypes(ChannelType.GuildText).setRequired(false)
+        )
+        .addStringOption(opt =>
+          opt.setName('message').setDescription('New message (optional)').setRequired(false)
+        ),
+
+      new SlashCommandBuilder()
+        .setName('delete-role-message')
+        .setDescription('Delete the active onboarding role message'),
+
+      new SlashCommandBuilder()
+        .setName('list-role-messages')
+        .setDescription('View active onboarding role message configuration')
+    ].map(cmd => cmd.toJSON());
+
+    const rest = new REST({ version: '10' }).setToken(token);
+    try {
+      await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
+      console.log(`✅ Slash commands registered for ${guild.name}`);
+    } catch (err) {
+      console.error(`❌ Failed to register commands for ${guild.name}:`, err);
+    }
+  });
+});
 // Slash command handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild()) {
-    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', flags: 1 << 6 });
+    await interaction.reply({ content: '❌ Commands must be used in a server, not in DMs.', ephemeral: true });
     return;
   }
 
   const member = interaction.member;
   const isAdmin = member.roles.cache.some(role => role.name.toLowerCase() === 'admin');
   if (!isAdmin) {
-    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', flags: 1 << 6 });
+    await interaction.reply({ content: '❌ You must have the **Admin** role to use this command.', ephemeral: true });
     return;
   }
 
@@ -164,6 +126,9 @@ client.on(Events.InteractionCreate, async interaction => {
     config.channelId = channel.id;
     config.message = message;
 
+    serverConfig.set(guildId, config);
+    kv.saveServerConfig(serverConfig);
+
     await interaction.reply(`✅ Role message created:\n• Name: **${name}**\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`);
   }
 
@@ -174,7 +139,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const message = interaction.options.getString('message');
 
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({ content: '⚠️ No active config to edit.', flags: 1 << 6 });
+      await interaction.reply({ content: '⚠️ No active config to edit.', ephemeral: true });
       return;
     }
 
@@ -183,17 +148,20 @@ client.on(Events.InteractionCreate, async interaction => {
     if (channel) config.channelId = channel.id;
     if (message) config.message = message;
 
+    kv.saveServerConfig(serverConfig);
+
     await interaction.reply(`✅ Role message updated:\n• Name: **${config.name}**\n• Role: **${interaction.guild.roles.cache.get(config.roleId)?.name || 'Unknown'}**\n• Channel: **${interaction.guild.channels.cache.get(config.channelId)?.name || 'Unknown'}**\n• Message: "${config.message}"`);
   }
 
   if (interaction.commandName === 'delete-role-message') {
     serverConfig.delete(guildId);
+    kv.saveServerConfig(serverConfig);
     await interaction.reply('🗑️ Role message configuration deleted.');
   }
 
   if (interaction.commandName === 'list-role-messages') {
     if (!config.roleId || !config.channelId || !config.message || !config.name) {
-      await interaction.reply({ content: '⚠️ No active role message configuration found.', flags: 1 << 6 });
+      await interaction.reply({ content: '⚠️ No active role message configuration found.', ephemeral: true });
       return;
     }
 
@@ -204,11 +172,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
     await interaction.reply({
       content: `📋 Active Role Message Configuration:\n• Name: **${name}**\n• Role: **${role?.name || 'Unknown'}**\n• Channel: **${channel?.name || 'Unknown'}**\n• Message: "${message}"`,
-      flags: 1 << 6
+      ephemeral: true
     });
   }
 });
-
 // Role assignment detection
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
@@ -247,6 +214,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 
   onboardingSet.add(newMember.id);
+  kv.saveActiveOnboarding(activeOnboarding);
 
   try {
     await newMember.roles.remove(config.roleId);
@@ -270,26 +238,28 @@ client.on(Events.InteractionCreate, async interaction => {
   const role = interaction.guild.roles.cache.get(config.roleId);
 
   if (!role) {
-    await interaction.reply({ content: '⚠️ Role not found.', flags: 1 << 6 });
+    await interaction.reply({ content: '⚠️ Role not found.', ephemeral: true });
     return;
   }
 
   if (interaction.user.id !== memberId) {
-    await interaction.reply({ content: '❌ This button is not for you.', flags: 1 << 6 });
+    await interaction.reply({ content: '❌ This button is not for you.', ephemeral: true });
     return;
   }
 
   try {
     await member.roles.add(role);
     activeOnboarding.get(guildId)?.delete(memberId);
+    kv.saveActiveOnboarding(activeOnboarding);
 
-    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', flags: 1 << 6 });
+    await interaction.reply({ content: '✅ Role assigned. Welcome aboard!', ephemeral: true });
     console.log(`🎯 Role ${role.name} successfully reassigned to ${member.user.tag}`);
   } catch (error) {
     console.error(`❌ Failed to assign role:`, error);
-    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', flags: 1 << 6 });
+    await interaction.reply({ content: '❌ Could not assign role. Please check bot permissions.', ephemeral: true });
   }
 });
 
 // ✅ Start the bot
 client.login(token);
+
