@@ -220,10 +220,17 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     }
 
     const username = newMember.nickname || newMember.user.username;
+    const customId = JSON.stringify({
+      t: 'confirm_read',
+      user: newMember.id,
+      flow: name
+    });
+
     const confirmButton = new ButtonBuilder()
-      .setCustomId(`confirm_read_${newMember.id}_${name}`)
+      .setCustomId(customId)
       .setLabel('✅ I’ve read it')
       .setStyle(ButtonStyle.Success);
+
     const row = new ActionRowBuilder().addComponents(confirmButton);
 
     const channel = newMember.guild.channels.cache.get(channelId);
@@ -256,12 +263,25 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 // --- BUTTON HANDLER (CONFIRM READ) ---
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
-  if (!interaction.customId.startsWith('confirm_read')) return;
 
-  const [_, __, memberId, flowName] = interaction.customId.split('_');
+  let data;
+  try {
+    data = JSON.parse(interaction.customId);
+  } catch {
+    return; // ignore unrelated buttons
+  }
+
+  if (data.t !== 'confirm_read') return;
+
+  const memberId = data.user;
+  const flowName = data.flow;
   const guildId = interaction.guild.id;
+
   const config = await kv.getConfig(guildId);
-  if (!config?.messages?.[flowName]) return;
+  if (!config?.messages?.[flowName]) {
+    console.warn(`⚠️ No config for flow "${flowName}"`);
+    return;
+  }
 
   const flow = config.messages[flowName];
   const member = await interaction.guild.members.fetch(memberId);
