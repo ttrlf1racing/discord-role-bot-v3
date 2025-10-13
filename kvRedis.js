@@ -1,50 +1,47 @@
-// kvRedis.js — persistent Redis key-value store
+const Redis = require('ioredis');
+const redis = new Redis(process.env.REDIS_URL);
 
-const { createClient } = require('redis');
+// Store config per role
+async function setConfig(guildId, roleId, config) {
+  await redis.hset(`config:${guildId}`, roleId, JSON.stringify(config));
+}
 
-const redis = createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379'
-});
+// Get config for a specific role
+async function getConfig(guildId, roleId) {
+  const raw = await redis.hget(`config:${guildId}`, roleId);
+  return raw ? JSON.parse(raw) : null;
+}
 
-redis.on('error', err => console.error('❌ Redis Client Error', err));
-redis.connect();
+// Delete config for a role
+async function deleteConfig(guildId, roleId) {
+  await redis.hdel(`config:${guildId}`, roleId);
+}
+
+// List all configs for a guild
+async function listConfigs(guildId) {
+  const all = await redis.hgetall(`config:${guildId}`);
+  const parsed = {};
+  for (const [roleId, raw] of Object.entries(all)) {
+    parsed[roleId] = JSON.parse(raw);
+  }
+  return parsed;
+}
+
+// Onboarding state
+async function setOnboarding(guildId, set) {
+  await redis.set(`onboarding:${guildId}`, JSON.stringify([...set]));
+}
+
+async function getOnboarding(guildId) {
+  const raw = await redis.get(`onboarding:${guildId}`);
+  return raw ? new Set(JSON.parse(raw)) : new Set();
+}
 
 module.exports = {
-  async getConfig(guildId) {
-    try {
-      const raw = await redis.get(`config:${guildId}`);
-      return raw ? JSON.parse(raw) : null;
-    } catch (err) {
-      console.error('❌ Redis getConfig error:', err);
-      return null;
-    }
-  },
-
-  async setConfig(guildId, config) {
-    try {
-      await redis.set(`config:${guildId}`, JSON.stringify(config));
-    } catch (err) {
-      console.error('❌ Redis setConfig error:', err);
-    }
-  },
-
-  async getOnboarding(guildId) {
-    try {
-      const data = await redis.sMembers(`onboarding:${guildId}`);
-      return new Set(data || []);
-    } catch (err) {
-      console.error('❌ Redis getOnboarding error:', err);
-      return new Set();
-    }
-  },
-
-  async setOnboarding(guildId, set) {
-    try {
-      const key = `onboarding:${guildId}`;
-      await redis.del(key);
-      if (set.size > 0) await redis.sAdd(key, [...set]);
-    } catch (err) {
-      console.error('❌ Redis setOnboarding error:', err);
-    }
-  }
+  setConfig,
+  getConfig,
+  deleteConfig,
+  listConfigs,
+  setOnboarding,
+  getOnboarding
 };
