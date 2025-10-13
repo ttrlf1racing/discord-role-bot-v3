@@ -14,10 +14,9 @@ const {
   PermissionFlagsBits
 } = require('discord.js');
 const { MessageFlags } = require('discord-api-types/v10');
-const kv = require('./kvRedis'); // key-value storage for onboarding state
+const kv = require('./kvRedis');
 
-const recentlyConfirmed = new Map(); // guildId -> Set of userIds
-const sentMessages = new Set(); // avoid double onboarding messages
+const recentlyConfirmed = new Map(); // guildId → Set of userIds
 
 const client = new Client({
   intents: [
@@ -28,7 +27,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-process.on('unhandledRejection', e => console.error('Unhandled promise rejection:', e));
+process.on('unhandledRejection', e => console.error('Unhandled rejection:', e));
 process.on('uncaughtException', e => console.error('Uncaught exception:', e));
 
 const token = process.env.DISCORD_TOKEN?.trim();
@@ -107,7 +106,7 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// ---- Guild Member Role Update ----
+// --- Guild Member Role Update ---
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = await kv.getConfig(guildId);
@@ -122,22 +121,25 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const { roleId, channelId, message } = flow;
     if (!addedRoles.has(roleId)) continue;
 
-    // Skip recently confirmed users
-    if (recentlyConfirmed.get(guildId)?.has(newMember.id)) return;
-
-    // If already onboarding, skip re-send but remove role
-    if (onboardingSet.has(newMember.id)) {
-      if (newMember.roles.cache.has(roleId)) {
-        await newMember.roles.remove(roleId).catch(() => {});
-        console.log(`🚫 Role removed from ${newMember.user.tag} (still onboarding)`);
-      }
-      return;
+    // --- skip if just confirmed ---
+    if (recentlyConfirmed.get(guildId)?.has(newMember.id)) {
+      console.log(`🛑 Skipping ${newMember.user.tag} — recently confirmed.`);
+      continue;
     }
 
-    // Send onboarding message
+    // --- skip if already onboarding ---
+    if (onboardingSet.has(newMember.id)) {
+      console.log(`⏸ ${newMember.user.tag} still onboarding; ensuring no role.`);
+      if (newMember.roles.cache.has(roleId)) {
+        await newMember.roles.remove(roleId).catch(() => {});
+      }
+      continue;
+    }
+
+    // --- send onboarding message ---
     const channel = newMember.guild.channels.cache.get(channelId);
     if (!channel || !channel.isTextBased()) {
-      console.log(`❌ Invalid channel for flow ${name}`);
+      console.error(`❌ Invalid channel for flow ${name}`);
       return;
     }
 
@@ -156,14 +158,12 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       });
       console.log(`📨 Sent onboarding message for ${newMember.user.tag} in #${channel.name}`);
     } catch (e) {
-      console.error(`❌ Failed to send onboarding message:`, e);
+      console.error('❌ Failed to send onboarding message:', e);
     }
 
-    // Mark onboarding started
     onboardingSet.add(newMember.id);
     await kv.setOnboarding(guildId, onboardingSet);
 
-    // Remove role until confirmation
     try {
       await newMember.roles.remove(roleId);
       console.log(`⏳ Temporarily removed role ${roleId} from ${newMember.user.tag}`);
@@ -173,9 +173,10 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-// ---- Button Interaction (Confirm) ----
+// --- Button Interaction ---
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
+
   let data;
   try {
     data = JSON.parse(interaction.customId);
@@ -186,31 +187,35 @@ client.on(Events.InteractionCreate, async interaction => {
 
   const guildId = interaction.guild.id;
   const config = await kv.getConfig(guildId);
-  if (!config?.messages?.[data.f]) return;
+  const flow = config?.messages?.[data.f];
+  if (!flow) return;
 
-  const flow = config.messages[data.f];
   const member = await interaction.guild.members.fetch(data.u).catch(() => null);
   if (!member) return;
 
   if (interaction.user.id !== member.id)
     return interaction.reply({ content: '❌ This button isn’t for you.', flags: MessageFlags.Ephemeral });
 
+  const onboardingSet = await kv.getOnboarding(guildId);
+  onboardingSet.delete(member.id);
+  await kv.setOnboarding(guildId, onboardingSet);
+
+  if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
+  recentlyConfirmed.get(guildId).add(member.id);
+
   try {
     await member.roles.add(flow.roleId);
-    const onboardingSet = await kv.getOnboarding(guildId);
-    onboardingSet.delete(member.id);
-    await kv.setOnboarding(guildId, onboardingSet);
-
-    if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
-    recentlyConfirmed.get(guildId).add(member.id);
-    setTimeout(() => recentlyConfirmed.get(guildId).delete(member.id), 5000);
-
     await interaction.reply({ content: '✅ Verified! Role granted.', flags: MessageFlags.Ephemeral });
     console.log(`🎯 ${member.user.tag} confirmed and got role ${flow.roleId}`);
   } catch (e) {
     console.error(`❌ Could not assign role:`, e);
     await interaction.reply({ content: '❌ Failed to assign role.', flags: MessageFlags.Ephemeral });
   }
+
+  // Remove from recentlyConfirmed after 10 seconds
+  setTimeout(() => {
+    recentlyConfirmed.get(guildId)?.delete(member.id);
+  }, 10000);
 });
 
 client.login(token);
