@@ -1,22 +1,21 @@
-const Redis = require('ioredis');
-const redis = new Redis(process.env.REDIS_URL);
+// kvRedis.js — in-memory fallback mock
+const memory = {
+  config: {},
+  onboarding: {}
+};
 
 module.exports = {
   async getConfig(guildId) {
-    const raw = await redis.get(`config:${guildId}`);
-    return raw ? JSON.parse(raw) : null;
+    return memory.config[guildId] || null;
   },
   async setConfig(guildId, config) {
-    await redis.set(`config:${guildId}`, JSON.stringify(config));
-  },
-  async deleteConfig(guildId) {
-    await redis.del(`config:${guildId}`);
+    memory.config[guildId] = config;
   },
   async getOnboarding(guildId) {
-    const raw = await redis.get(`onboarding:${guildId}`);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
+    if (!memory.onboarding[guildId]) memory.onboarding[guildId] = new Set();
+    return memory.onboarding[guildId];
   },
-  async setOnboarding(guildId, userSet) {
-    await redis.set(`onboarding:${guildId}`, JSON.stringify(Array.from(userSet)));
+  async setOnboarding(guildId, set) {
+    memory.onboarding[guildId] = set;
   }
 };
