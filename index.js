@@ -22,9 +22,10 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages
   ],
-  partials: [Partials.Channel]
+  partials: [Partials.Channel, Partials.Message]
 });
 
 const token = process.env.DISCORD_TOKEN?.trim();
@@ -239,9 +240,9 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     let formattedMessage = flow.message
       .replace(/{user}/g, `<@${newMember.id}>`)
       .replace(/{role}/g, `<@&${flow.roleId}>`)
-      .replace(/\s{2,}/g, "\n\n") // double spaces → blank line
-      .replace(/(?<!\n)\.\s/g, ".\n") // newline after sentence
-      .replace(/(?<!\n):\s/g, ":\n"); // newline after colon
+      .replace(/\s{2,}/g, "\n\n")
+      .replace(/(?<!\n)\.\s/g, ".\n")
+      .replace(/(?<!\n):\s/g, ":\n");
 
     const customId = `confirm_${flowName}_${newMember.id}`;
     const button = new ButtonBuilder()
@@ -261,7 +262,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       continue;
     }
 
-    // Remove role after message is sent (small delay ensures message is out)
+    // Remove role after message is sent
     setTimeout(async () => {
       try {
         await newMember.roles.remove(flow.roleId);
@@ -295,6 +296,7 @@ client.on(Events.InteractionCreate, async interaction => {
     });
 
   const member = await interaction.guild.members.fetch(memberId);
+  const channel = interaction.guild.channels.cache.get(flow.channelId);
 
   // Mark user to avoid retrigger loop
   if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
@@ -302,8 +304,33 @@ client.on(Events.InteractionCreate, async interaction => {
 
   try {
     await member.roles.add(flow.roleId);
+
+    // 📨 Send DM with message copy (no button)
+    const dmText = flow.message
+      .replace(/{user}/g, member.user.toString())
+      .replace(/{role}/g, `<@&${flow.roleId}>`)
+      .replace(/\s{2,}/g, "\n\n")
+      .replace(/(?<!\n)\.\s/g, ".\n")
+      .replace(/(?<!\n):\s/g, ":\n");
+
+    try {
+      await member.send(
+        `📩 **Here’s a copy of your onboarding message for reference:**\n\n${dmText}`
+      );
+    } catch {
+      console.warn(`⚠️ Could not DM ${member.user.tag}`);
+    }
+
+    // 🚫 Hide the onboarding channel from the user
+    if (channel) {
+      await channel.permissionOverwrites.edit(member.id, {
+        ViewChannel: false
+      });
+      console.log(`🚪 Hid ${channel.name} from ${member.user.tag}`);
+    }
+
     await interaction.reply({
-      content: "✅ Role assigned. Welcome aboard!",
+      content: "✅ Role assigned and onboarding complete!",
       flags: MessageFlags.Ephemeral
     });
     console.log(`🎯 ${member.user.tag} confirmed and got ${flow.roleId}`);
