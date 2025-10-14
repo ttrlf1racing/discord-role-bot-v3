@@ -38,69 +38,74 @@ process.on("unhandledRejection", console.error);
 process.on("uncaughtException", console.error);
 
 // ----------------------
-// Slash Command Setup
+// Shared Slash Commands Template
+// ----------------------
+const getCommands = () => [
+  new SlashCommandBuilder()
+    .setName("create-role-message")
+    .setDescription("Create a named onboarding flow for a role.")
+    .addStringOption(o =>
+      o.setName("name").setDescription("Flow name").setRequired(true)
+    )
+    .addRoleOption(o =>
+      o.setName("role").setDescription("Role to assign").setRequired(true)
+    )
+    .addChannelOption(o =>
+      o
+        .setName("channel")
+        .setDescription("Channel to post onboarding message")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("message")
+        .setDescription("Message (use {user} and {role} placeholders)")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("edit-role-message")
+    .setDescription("Edit an existing onboarding flow.")
+    .addStringOption(o =>
+      o.setName("name").setDescription("Flow name").setRequired(true)
+    )
+    .addRoleOption(o =>
+      o.setName("role").setDescription("New role").setRequired(false)
+    )
+    .addChannelOption(o =>
+      o
+        .setName("channel")
+        .setDescription("New channel")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+    .addStringOption(o =>
+      o.setName("message").setDescription("New message").setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("delete-role-message")
+    .setDescription("Delete a flow.")
+    .addStringOption(o =>
+      o.setName("name").setDescription("Flow name").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("list-role-messages")
+    .setDescription("List all configured onboarding flows.")
+].map(c => c.toJSON());
+
+// ----------------------
+// Slash Command Registration on Ready
 // ----------------------
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
+  const rest = new REST({ version: "10" }).setToken(token);
+  const commands = getCommands();
+
   for (const [guildId, guild] of client.guilds.cache) {
-    const commands = [
-      new SlashCommandBuilder()
-        .setName("create-role-message")
-        .setDescription("Create a named onboarding flow for a role.")
-        .addStringOption(o =>
-          o.setName("name").setDescription("Flow name").setRequired(true)
-        )
-        .addRoleOption(o =>
-          o.setName("role").setDescription("Role to assign").setRequired(true)
-        )
-        .addChannelOption(o =>
-          o
-            .setName("channel")
-            .setDescription("Channel to post onboarding message")
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
-        )
-        .addStringOption(o =>
-          o
-            .setName("message")
-            .setDescription("Message (use {user} and {role} placeholders)")
-            .setRequired(true)
-        ),
-
-      new SlashCommandBuilder()
-        .setName("edit-role-message")
-        .setDescription("Edit an existing onboarding flow.")
-        .addStringOption(o =>
-          o.setName("name").setDescription("Flow name").setRequired(true)
-        )
-        .addRoleOption(o =>
-          o.setName("role").setDescription("New role").setRequired(false)
-        )
-        .addChannelOption(o =>
-          o
-            .setName("channel")
-            .setDescription("New channel")
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(false)
-        )
-        .addStringOption(o =>
-          o.setName("message").setDescription("New message").setRequired(false)
-        ),
-
-      new SlashCommandBuilder()
-        .setName("delete-role-message")
-        .setDescription("Delete a flow.")
-        .addStringOption(o =>
-          o.setName("name").setDescription("Flow name").setRequired(true)
-        ),
-
-      new SlashCommandBuilder()
-        .setName("list-role-messages")
-        .setDescription("List all configured onboarding flows.")
-    ].map(c => c.toJSON());
-
-    const rest = new REST({ version: "10" }).setToken(token);
     try {
       await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
         body: commands
@@ -109,6 +114,25 @@ client.once(Events.ClientReady, async () => {
     } catch (err) {
       console.error(`❌ Failed to register commands for ${guild.name}:`, err);
     }
+  }
+});
+
+// ----------------------
+// Auto-register commands when bot joins new server
+// ----------------------
+client.on(Events.GuildCreate, async guild => {
+  console.log(`🆕 Joined new guild: ${guild.name}`);
+
+  const rest = new REST({ version: "10" }).setToken(token);
+  const commands = getCommands();
+
+  try {
+    await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), {
+      body: commands
+    });
+    console.log(`✅ Commands registered for new guild: ${guild.name}`);
+  } catch (err) {
+    console.error(`❌ Failed to register commands for ${guild.name}:`, err);
   }
 });
 
@@ -209,21 +233,18 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 // ----------------------
-// Role Added → Send Onboarding (with smart visibility)
+// Role Added → Send Onboarding (smart visibility)
 // ----------------------
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = await kv.getConfig(guildId);
   if (!config?.messages) return;
 
-  // Skip if recently confirmed
   if (
     recentlyConfirmed.has(guildId) &&
     recentlyConfirmed.get(guildId).has(newMember.id)
-  ) {
-    console.log(`🛑 Skipping ${newMember.user.tag} — recently confirmed.`);
+  )
     return;
-  }
 
   const oldRoles = new Set(oldMember.roles.cache.keys());
   const newRoles = new Set(newMember.roles.cache.keys());
@@ -236,17 +257,15 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const channel = newMember.guild.channels.cache.get(flow.channelId);
     if (!channel) continue;
 
-    // 👁️ Ensure user can view onboarding channel
     try {
       await channel.permissionOverwrites.edit(newMember.id, {
         ViewChannel: true
       });
       console.log(`👁️ Gave ${newMember.user.tag} access to ${channel.name}`);
     } catch (err) {
-      console.warn(`⚠️ Could not give access to ${channel.name}:`, err.message);
+      console.warn(`⚠️ Could not modify ${channel.name}:`, err.message);
     }
 
-    // 🧩 Format message neatly
     let formattedMessage = flow.message
       .replace(/{user}/g, `<@${newMember.id}>`)
       .replace(/{role}/g, `<@&${flow.roleId}>`)
@@ -255,108 +274,3 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       .replace(/(?<!\n):\s/g, ":\n");
 
     const customId = `confirm_${flowName}_${newMember.id}`;
-    const button = new ButtonBuilder()
-      .setCustomId(customId)
-      .setLabel("✅ I’ve read it")
-      .setStyle(ButtonStyle.Success);
-    const row = new ActionRowBuilder().addComponents(button);
-
-    try {
-      await channel.send({
-        content: formattedMessage,
-        components: [row]
-      });
-      console.log(`📨 Sent onboarding for ${newMember.user.tag} (${flowName})`);
-    } catch (err) {
-      console.error(`❌ Failed to send onboarding:`, err);
-      continue;
-    }
-
-    // Remove role after message is sent
-    setTimeout(async () => {
-      try {
-        await newMember.roles.remove(flow.roleId);
-        console.log(
-          `⏳ Temporarily removed ${flow.roleId} from ${newMember.user.tag}`
-        );
-      } catch (err) {
-        console.error(`❌ Failed to remove role:`, err);
-      }
-    }, 1000);
-  }
-});
-
-// ----------------------
-// Button Click → Confirm (hide channel + DM copy)
-// ----------------------
-client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isButton()) return;
-  if (!interaction.customId.startsWith("confirm_")) return;
-
-  const [, flowName, memberId] = interaction.customId.split("_");
-  const guildId = interaction.guild.id;
-  const config = await kv.getConfig(guildId);
-  const flow = config?.messages?.[flowName];
-  if (!flow) return;
-
-  if (interaction.user.id !== memberId)
-    return interaction.reply({
-      content: "❌ This button isn’t for you.",
-      flags: MessageFlags.Ephemeral
-    });
-
-  const member = await interaction.guild.members.fetch(memberId);
-  const channel = interaction.guild.channels.cache.get(flow.channelId);
-
-  // Mark user to avoid retrigger loop
-  if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
-  recentlyConfirmed.get(guildId).add(memberId);
-
-  try {
-    await member.roles.add(flow.roleId);
-
-    // 📨 DM user copy of onboarding message
-    const dmText = flow.message
-      .replace(/{user}/g, member.user.toString())
-      .replace(/{role}/g, `<@&${flow.roleId}>`)
-      .replace(/\s{2,}/g, "\n\n")
-      .replace(/(?<!\n)\.\s/g, ".\n")
-      .replace(/(?<!\n):\s/g, ":\n");
-
-    try {
-      await member.send(
-        `📩 **Here’s a copy of your onboarding message for reference:**\n\n${dmText}`
-      );
-    } catch {
-      console.warn(`⚠️ Could not DM ${member.user.tag}`);
-    }
-
-    // 🚪 Hide only this channel after confirmation
-    if (channel) {
-      await channel.permissionOverwrites.edit(member.id, {
-        ViewChannel: false
-      });
-      console.log(`🚪 Hid ${channel.name} from ${member.user.tag}`);
-    }
-
-    await interaction.reply({
-      content: "✅ Role assigned and onboarding complete!",
-      flags: MessageFlags.Ephemeral
-    });
-    console.log(`🎯 ${member.user.tag} confirmed and got ${flow.roleId}`);
-  } catch (err) {
-    console.error("❌ Role assign error:", err);
-    await interaction.reply({
-      content: "❌ Could not assign role.",
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
-  // Clear confirmation after 10s
-  setTimeout(() => {
-    if (recentlyConfirmed.has(guildId))
-      recentlyConfirmed.get(guildId).delete(memberId);
-  }, 10000);
-});
-
-client.login(token);
