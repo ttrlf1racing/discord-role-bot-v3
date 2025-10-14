@@ -1,36 +1,78 @@
-const fs = require('fs');
-const path = require('path');
+// kvRedis.js — persistent Redis key-value store with Railway support
 
-const configPath = path.join(__dirname, 'serverConfig.json');
-const onboardingPath = path.join(__dirname, 'activeOnboarding.json');
+const { createClient } = require('redis');
 
-function loadMap(filePath) {
-  if (!fs.existsSync(filePath)) return new Map();
-  const raw = fs.readFileSync(filePath);
-  const obj = JSON.parse(raw);
-  return new Map(Object.entries(obj));
+let redisUrl = process.env.REDIS_URL;
+
+if (!redisUrl) {
+  console.error('❌ Missing REDIS_URL in environment!');
+  process.exit(1);
 }
 
-function saveMap(map, filePath) {
-  const obj = Object.fromEntries(map);
-  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2));
+// Fix for Railway internal vs proxy URLs
+if (redisUrl.startsWith('redis://') && redisUrl.includes('.railway.internal')) {
+  redisUrl = redisUrl.replace('redis://', 'rediss://');
 }
+
+console.log(`🔗 Connecting to Redis: ${redisUrl}`);
+
+const redis = createClient({
+  url: redisUrl,
+  socket: {
+    reconnectStrategy: retries => Math.min(retries * 500, 5000),
+    tls: redisUrl.startsWith('rediss://')
+  }
+});
+
+redis.on('error', err => console.error('❌ Redis Client Error:', err.message));
+redis.on('connect', () => console.log('✅ Redis client connected'));
+redis.on('reconnecting', () => console.log('♻️ Reconnecting to Redis...'));
+redis.connect();
 
 module.exports = {
-  loadServerConfig: () => loadMap(configPath),
-  saveServerConfig: (map) => saveMap(map, configPath),
-  loadActiveOnboarding: () => {
-    const rawMap = loadMap(onboardingPath);
-    for (const [guildId, userArray] of rawMap.entries()) {
-      rawMap.set(guildId, new Set(userArray));
+  async getConfig(guildId) {
+    try {
+      const raw = await redis.get(`config:${guildId}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      console.error('❌ Redis getConfig error:', err);
+      return null;
     }
-    return rawMap;
   },
-  saveActiveOnboarding: (map) => {
-    const obj = {};
-    for (const [guildId, userSet] of map.entries()) {
-      obj[guildId] = Array.from(userSet);
+
+  async setConfig(guildId, config) {
+    try {
+      await redis.set(`config:${guildId}`, JSON.stringify(config));
+    } catch (err) {
+      console.error('❌ Redis setConfig error:', err);
     }
-    fs.writeFileSync(onboardingPath, JSON.stringify(obj, null, 2));
+  },
+
+  async deleteConfig(guildId) {
+    try {
+      await redis.del(`config:${guildId}`);
+    } catch (err) {
+      console.error('❌ Redis deleteConfig error:', err);
+    }
+  },
+
+  async getOnboarding(guildId) {
+    try {
+      const data = await redis.sMembers(`onboarding:${guildId}`);
+      return new Set(data || []);
+    } catch (err) {
+      console.error('❌ Redis getOnboarding error:', err);
+      return new Set();
+    }
+  },
+
+  async setOnboarding(guildId, set) {
+    try {
+      const key = `onboarding:${guildId}`;
+      await redis.del(key);
+      if (set.size > 0) await redis.sAdd(key, [...set]);
+    } catch (err) {
+      console.error('❌ Redis setOnboarding error:', err);
+    }
   }
 };
