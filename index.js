@@ -5,7 +5,6 @@ const {
   Partials,
   Events,
   SlashCommandBuilder,
-  ChannelType,
   REST,
   Routes,
   ButtonBuilder,
@@ -44,33 +43,32 @@ client.once(Events.ClientReady, async () => {
     const commands = [
       new SlashCommandBuilder()
         .setName("create-role-message")
-        .setDescription("Create an onboarding flow for a role")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("Flow name").setRequired(true)
-        )
+        .setDescription("Set onboarding message for a role")
         .addRoleOption(opt =>
-          opt.setName("role").setDescription("Role to assign after confirm").setRequired(true)
+          opt.setName("role").setDescription("Role to link message to").setRequired(true)
         )
         .addChannelOption(opt =>
           opt
             .setName("channel")
             .setDescription("Channel to post onboarding message")
-            .addChannelTypes(ChannelType.GuildText)
             .setRequired(true)
         )
         .addStringOption(opt =>
-          opt.setName("message").setDescription("Message (use {user})").setRequired(true)
+          opt
+            .setName("message")
+            .setDescription("Onboarding message (use {user} and {role})")
+            .setRequired(true)
         ),
 
       new SlashCommandBuilder()
         .setName("list-role-messages")
-        .setDescription("List all onboarding flows"),
+        .setDescription("List all role onboarding messages"),
 
       new SlashCommandBuilder()
         .setName("delete-role-message")
-        .setDescription("Delete an onboarding flow")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("Flow name").setRequired(true)
+        .setDescription("Delete onboarding message for a role")
+        .addRoleOption(opt =>
+          opt.setName("role").setDescription("Role to remove message for").setRequired(true)
         )
     ].map(c => c.toJSON());
 
@@ -86,80 +84,73 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-// --- Command Handler ---
+// --- Slash Command Handler ---
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
-  if (!interaction.inGuild()) {
+  if (!interaction.inGuild())
     return interaction.reply({
-      content: "❌ Use commands in a server.",
+      content: "❌ Use commands inside a server.",
       flags: MessageFlags.Ephemeral
     });
-  }
 
   const guildId = interaction.guild.id;
   let config = (await kv.getConfig(guildId)) || { messages: {} };
 
   const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-  if (!isAdmin) {
+  if (!isAdmin)
     return interaction.reply({
       content: "❌ You must be an Administrator.",
       flags: MessageFlags.Ephemeral
     });
-  }
 
-  // --- Create Flow ---
+  // Create / update onboarding message for a role
   if (interaction.commandName === "create-role-message") {
-    const name = interaction.options.getString("name");
     const role = interaction.options.getRole("role");
     const channel = interaction.options.getChannel("channel");
     const message = interaction.options.getString("message");
 
-    config.messages[name] = {
-      roleId: role.id,
-      channelId: channel.id,
-      message
-    };
-
+    config.messages[role.id] = { channelId: channel.id, message };
     await kv.setConfig(guildId, config);
+
     await interaction.reply(
-      `✅ Created onboarding flow **${name}**:\n• Role: **${role.name}**\n• Channel: **${channel.name}**\n• Message: "${message}"`
+      `✅ Onboarding message set for role **${role.name}** in **${channel.name}**`
     );
   }
 
-  // --- List Flows ---
+  // List all
   if (interaction.commandName === "list-role-messages") {
     const entries = Object.entries(config.messages || {});
     if (entries.length === 0)
       return interaction.reply({
-        content: "⚠️ No onboarding flows configured.",
+        content: "⚠️ No role messages configured.",
         flags: MessageFlags.Ephemeral
       });
 
     const list = entries
       .map(
-        ([n, f]) =>
-          `• **${n}** → Role <@&${f.roleId}> in <#${f.channelId}> → "${f.message}"`
+        ([roleId, data]) =>
+          `• <@&${roleId}> → <#${data.channelId}> (${data.message.length} chars)`
       )
       .join("\n");
 
     return interaction.reply({
-      content: `📋 Active Onboarding Flows:\n${list}`,
+      content: `📋 Configured Onboarding Messages:\n${list}`,
       flags: MessageFlags.Ephemeral
     });
   }
 
-  // --- Delete Flow ---
+  // Delete
   if (interaction.commandName === "delete-role-message") {
-    const name = interaction.options.getString("name");
-    if (!config.messages[name])
+    const role = interaction.options.getRole("role");
+    if (!config.messages[role.id])
       return interaction.reply({
-        content: `⚠️ Flow **${name}** not found.`,
+        content: `⚠️ No message found for **${role.name}**.`,
         flags: MessageFlags.Ephemeral
       });
 
-    delete config.messages[name];
+    delete config.messages[role.id];
     await kv.setConfig(guildId, config);
-    return interaction.reply(`🗑️ Deleted onboarding flow **${name}**.`);
+    await interaction.reply(`🗑️ Deleted onboarding message for role **${role.name}**.`);
   }
 });
 
@@ -174,58 +165,56 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
   const onboardingSet = await kv.getOnboarding(guildId);
 
-  for (const [name, flow] of Object.entries(config.messages)) {
-    const { roleId, channelId, message } = flow;
-    if (!addedRoles.has(roleId)) continue;
+  for (const role of addedRoles.values()) {
+    const flow = config.messages[role.id];
+    if (!flow) continue;
 
-    // Skip if recently confirmed
     if (recentlyConfirmed.get(guildId)?.has(newMember.id)) continue;
-
-    // Skip if already onboarding
-    if (onboardingSet.has(newMember.id)) {
-      if (newMember.roles.cache.has(roleId)) {
-        await newMember.roles.remove(roleId).catch(() => {});
-      }
-      continue;
-    }
+    if (onboardingSet.has(newMember.id)) continue;
 
     const username = newMember.nickname || newMember.user.username;
     const confirmButton = new ButtonBuilder()
-      .setCustomId(`confirm_${name}_${newMember.id}`)
+      .setCustomId(`confirm_${role.id}_${newMember.id}`)
       .setLabel("✅ I’ve read it")
       .setStyle(ButtonStyle.Success);
     const row = new ActionRowBuilder().addComponents(confirmButton);
-    const channel = newMember.guild.channels.cache.get(channelId);
+    const channel = newMember.guild.channels.cache.get(flow.channelId);
 
     if (channel) {
+      const formattedMessage = flow.message
+        .replace(/{user}/g, `<@${newMember.id}>`)
+        .replace(/{role}/g, `<@&${role.id}>`)
+        .replace(/\r?\n/g, "\n");
+
       await channel.send({
-        content: message.replace("{user}", username),
+        content: formattedMessage,
+        allowedMentions: { users: [newMember.id], roles: [role.id] },
         components: [row]
       });
-      console.log(`📨 Sent onboarding message for ${username} in #${channel.name} (flow: ${name})`);
+      console.log(`📨 Sent onboarding for ${username} in #${channel.name} (role ${role.name})`);
     }
 
     onboardingSet.add(newMember.id);
     await kv.setOnboarding(guildId, onboardingSet);
 
     try {
-      await newMember.roles.remove(roleId);
-      console.log(`⏳ Temporarily removed role ${roleId} from ${username}`);
+      await newMember.roles.remove(role.id);
+      console.log(`⏳ Temporarily removed ${role.name} from ${username}`);
     } catch (e) {
-      console.error("❌ Role remove error:", e);
+      console.error("❌ Failed to remove role:", e);
     }
   }
 });
 
-// --- Button Handler ---
+// --- Button Confirm Handler ---
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith("confirm_")) return;
 
-  const [, flowName, memberId] = interaction.customId.split("_");
+  const [, roleId, memberId] = interaction.customId.split("_");
   const guildId = interaction.guild.id;
   const config = await kv.getConfig(guildId);
-  const flow = config?.messages?.[flowName];
+  const flow = config?.messages?.[roleId];
   if (!flow) return;
 
   const member = await interaction.guild.members.fetch(memberId);
@@ -243,12 +232,12 @@ client.on(Events.InteractionCreate, async interaction => {
   recentlyConfirmed.get(guildId).add(member.id);
 
   try {
-    await member.roles.add(flow.roleId);
+    await member.roles.add(roleId);
     await interaction.reply({
       content: "✅ Role assigned. Welcome aboard!",
       flags: MessageFlags.Ephemeral
     });
-    console.log(`🎯 ${member.user.tag} confirmed and got role ${flow.roleId} (flow: ${flowName})`);
+    console.log(`🎯 ${member.user.tag} confirmed and got role ${roleId}`);
   } catch (e) {
     console.error("❌ Role assign error:", e);
     await interaction.reply({
