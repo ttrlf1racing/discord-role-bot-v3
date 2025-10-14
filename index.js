@@ -235,9 +235,13 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const channel = newMember.guild.channels.cache.get(flow.channelId);
     if (!channel) continue;
 
-    const formattedMessage = flow.message
+    // 🧩 Format the message neatly before sending
+    let formattedMessage = flow.message
       .replace(/{user}/g, `<@${newMember.id}>`)
-      .replace(/{role}/g, `<@&${flow.roleId}>`);
+      .replace(/{role}/g, `<@&${flow.roleId}>`)
+      .replace(/\s{2,}/g, "\n\n") // double spaces → blank line
+      .replace(/(?<!\n)\.\s/g, ".\n") // newline after sentence
+      .replace(/(?<!\n):\s/g, ":\n"); // newline after colon
 
     const customId = `confirm_${flowName}_${newMember.id}`;
     const button = new ButtonBuilder()
@@ -257,7 +261,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       continue;
     }
 
-    // Remove role after sending
+    // Remove role after message is sent (small delay ensures message is out)
     setTimeout(async () => {
       try {
         await newMember.roles.remove(flow.roleId);
@@ -292,7 +296,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   const member = await interaction.guild.members.fetch(memberId);
 
-  // Mark as recently confirmed (prevents loop)
+  // Mark user to avoid retrigger loop
   if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
   recentlyConfirmed.get(guildId).add(memberId);
 
@@ -311,11 +315,10 @@ client.on(Events.InteractionCreate, async interaction => {
     });
   }
 
-  // Clear confirmation after 10 seconds
+  // Clear confirmation after 10s
   setTimeout(() => {
-    if (recentlyConfirmed.has(guildId)) {
+    if (recentlyConfirmed.has(guildId))
       recentlyConfirmed.get(guildId).delete(memberId);
-    }
   }, 10000);
 });
 
