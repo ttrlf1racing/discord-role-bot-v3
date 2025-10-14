@@ -1,34 +1,35 @@
-// kvRedis.js — persistent Redis key-value store with Railway compatibility
-
+// kvRedis.js — Redis helper for Railway internal/external URLs
 const { createClient } = require('redis');
 
 let redisUrl = process.env.REDIS_URL;
-
 if (!redisUrl) {
-  console.error('❌ Missing REDIS_URL in environment!');
+  console.error('❌ Missing REDIS_URL!');
   process.exit(1);
 }
 
-// Railway sometimes gives URLs like redis://default:password@host:port
-// If SSL is required, switch to rediss://
-if (redisUrl.startsWith('redis://') && redisUrl.includes('.railway.')) {
-  redisUrl = redisUrl.replace('redis://', 'rediss://');
-}
-
-console.log(`🔗 Connecting to Redis: ${redisUrl}`);
+// detect if proxy host (external) or internal
+const useTLS = redisUrl.startsWith('rediss://') || redisUrl.includes('.proxy.rlwy.net');
+console.log(`🔗 Connecting to Redis: ${redisUrl} (TLS: ${useTLS ? 'on' : 'off'})`);
 
 const redis = createClient({
   url: redisUrl,
   socket: {
-    reconnectStrategy: retries => Math.min(retries * 500, 5000),
-    tls: redisUrl.startsWith('rediss://') // enables TLS for Railway
+    tls: useTLS,
+    reconnectStrategy: retries => Math.min(retries * 500, 5000)
   }
 });
 
 redis.on('error', err => console.error('❌ Redis Client Error:', err.message));
 redis.on('connect', () => console.log('✅ Redis client connected'));
 redis.on('reconnecting', () => console.log('♻️ Reconnecting to Redis...'));
-redis.connect();
+
+(async () => {
+  try {
+    await redis.connect();
+  } catch (err) {
+    console.error('❌ Redis connect error:', err);
+  }
+})();
 
 module.exports = {
   async getConfig(guildId) {
