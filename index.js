@@ -16,6 +16,8 @@ const {
 const { MessageFlags } = require("discord-api-types/v10");
 const kv = require("./kvRedis");
 
+const recentlyConfirmed = new Map(); // guildId → Set(userIds)
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -35,7 +37,7 @@ process.on("unhandledRejection", console.error);
 process.on("uncaughtException", console.error);
 
 // ----------------------
-// Slash command setup
+// Slash Command Setup
 // ----------------------
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
@@ -61,9 +63,7 @@ client.once(Events.ClientReady, async () => {
         .addStringOption(o =>
           o
             .setName("message")
-            .setDescription(
-              "Message content. Use {user} and {role} placeholders."
-            )
+            .setDescription("Message (use {user} and {role} placeholders)")
             .setRequired(true)
         ),
 
@@ -84,10 +84,7 @@ client.once(Events.ClientReady, async () => {
             .setRequired(false)
         )
         .addStringOption(o =>
-          o
-            .setName("message")
-            .setDescription("New message text (optional)")
-            .setRequired(false)
+          o.setName("message").setDescription("New message").setRequired(false)
         ),
 
       new SlashCommandBuilder()
@@ -115,7 +112,7 @@ client.once(Events.ClientReady, async () => {
 });
 
 // ----------------------
-// Slash command handling
+// Slash Command Handling
 // ----------------------
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -211,29 +208,33 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 // ----------------------
-// Role added → send message
+// Role Added → Send Onboarding
 // ----------------------
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = await kv.getConfig(guildId);
   if (!config?.messages) return;
 
+  // Skip if recently confirmed
+  if (
+    recentlyConfirmed.has(guildId) &&
+    recentlyConfirmed.get(guildId).has(newMember.id)
+  ) {
+    console.log(`🛑 Skipping ${newMember.user.tag} — recently confirmed.`);
+    return;
+  }
+
   const oldRoles = new Set(oldMember.roles.cache.keys());
   const newRoles = new Set(newMember.roles.cache.keys());
   const addedRoles = [...newRoles].filter(r => !oldRoles.has(r));
-
   if (!addedRoles.length) return;
 
   for (const [flowName, flow] of Object.entries(config.messages)) {
     if (!addedRoles.includes(flow.roleId)) continue;
 
     const channel = newMember.guild.channels.cache.get(flow.channelId);
-    if (!channel) {
-      console.warn(`⚠️ Channel not found for flow ${flowName}`);
-      continue;
-    }
+    if (!channel) continue;
 
-    // Fill placeholders with user + role mentions
     const formattedMessage = flow.message
       .replace(/{user}/g, `<@${newMember.id}>`)
       .replace(/{role}/g, `<@&${flow.roleId}>`);
@@ -256,18 +257,22 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       continue;
     }
 
-    // Remove role temporarily
-    try {
-      await newMember.roles.remove(flow.roleId);
-      console.log(`⏳ Temporarily removed ${flow.roleId} from ${newMember.user.tag}`);
-    } catch (err) {
-      console.error(`❌ Failed to remove role:`, err);
-    }
+    // Remove role after sending
+    setTimeout(async () => {
+      try {
+        await newMember.roles.remove(flow.roleId);
+        console.log(
+          `⏳ Temporarily removed ${flow.roleId} from ${newMember.user.tag}`
+        );
+      } catch (err) {
+        console.error(`❌ Failed to remove role:`, err);
+      }
+    }, 1000);
   }
 });
 
 // ----------------------
-// Button handler
+// Button Click → Confirm
 // ----------------------
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
@@ -286,6 +291,11 @@ client.on(Events.InteractionCreate, async interaction => {
     });
 
   const member = await interaction.guild.members.fetch(memberId);
+
+  // Mark as recently confirmed (prevents loop)
+  if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
+  recentlyConfirmed.get(guildId).add(memberId);
+
   try {
     await member.roles.add(flow.roleId);
     await interaction.reply({
@@ -300,6 +310,13 @@ client.on(Events.InteractionCreate, async interaction => {
       flags: MessageFlags.Ephemeral
     });
   }
+
+  // Clear confirmation after 10 seconds
+  setTimeout(() => {
+    if (recentlyConfirmed.has(guildId)) {
+      recentlyConfirmed.get(guildId).delete(memberId);
+    }
+  }, 10000);
 });
 
 client.login(token);
