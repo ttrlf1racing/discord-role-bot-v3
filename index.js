@@ -209,7 +209,7 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 // ----------------------
-// Role Added → Send Onboarding
+// Role Added → Send Onboarding (with smart visibility)
 // ----------------------
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
@@ -236,7 +236,17 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const channel = newMember.guild.channels.cache.get(flow.channelId);
     if (!channel) continue;
 
-    // 🧩 Format the message neatly before sending
+    // 👁️ Ensure user can view onboarding channel
+    try {
+      await channel.permissionOverwrites.edit(newMember.id, {
+        ViewChannel: true
+      });
+      console.log(`👁️ Gave ${newMember.user.tag} access to ${channel.name}`);
+    } catch (err) {
+      console.warn(`⚠️ Could not give access to ${channel.name}:`, err.message);
+    }
+
+    // 🧩 Format message neatly
     let formattedMessage = flow.message
       .replace(/{user}/g, `<@${newMember.id}>`)
       .replace(/{role}/g, `<@&${flow.roleId}>`)
@@ -277,7 +287,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 });
 
 // ----------------------
-// Button Click → Confirm
+// Button Click → Confirm (hide channel + DM copy)
 // ----------------------
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
@@ -305,7 +315,7 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await member.roles.add(flow.roleId);
 
-    // 📨 Send DM with message copy (no button)
+    // 📨 DM user copy of onboarding message
     const dmText = flow.message
       .replace(/{user}/g, member.user.toString())
       .replace(/{role}/g, `<@&${flow.roleId}>`)
@@ -321,7 +331,7 @@ client.on(Events.InteractionCreate, async interaction => {
       console.warn(`⚠️ Could not DM ${member.user.tag}`);
     }
 
-    // 🚫 Hide the onboarding channel from the user
+    // 🚪 Hide only this channel after confirmation
     if (channel) {
       await channel.permissionOverwrites.edit(member.id, {
         ViewChannel: false
