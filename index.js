@@ -97,11 +97,10 @@ const getCommands = () => [
 ].map(c => c.toJSON());
 
 // ----------------------
-// Slash Command Registration on Ready
+// Register Commands on Startup
 // ----------------------
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-
   const rest = new REST({ version: "10" }).setToken(token);
   const commands = getCommands();
 
@@ -118,11 +117,10 @@ client.once(Events.ClientReady, async () => {
 });
 
 // ----------------------
-// Auto-register commands when bot joins new server
+// Auto-register Commands for New Guilds
 // ----------------------
 client.on(Events.GuildCreate, async guild => {
   console.log(`🆕 Joined new guild: ${guild.name}`);
-
   const rest = new REST({ version: "10" }).setToken(token);
   const commands = getCommands();
 
@@ -233,7 +231,7 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 // ----------------------
-// Role Added → Send Onboarding (smart visibility)
+// Role Added → Send Onboarding
 // ----------------------
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
@@ -274,3 +272,103 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       .replace(/(?<!\n):\s/g, ":\n");
 
     const customId = `confirm_${flowName}_${newMember.id}`;
+    const button = new ButtonBuilder()
+      .setCustomId(customId)
+      .setLabel("✅ I’ve read it")
+      .setStyle(ButtonStyle.Success);
+    const row = new ActionRowBuilder().addComponents(button);
+
+    try {
+      await channel.send({
+        content: formattedMessage,
+        components: [row]
+      });
+      console.log(`📨 Sent onboarding for ${newMember.user.tag} (${flowName})`);
+    } catch (err) {
+      console.error(`❌ Failed to send onboarding:`, err);
+      continue;
+    }
+
+    setTimeout(async () => {
+      try {
+        await newMember.roles.remove(flow.roleId);
+        console.log(
+          `⏳ Temporarily removed ${flow.roleId} from ${newMember.user.tag}`
+        );
+      } catch (err) {
+        console.error(`❌ Failed to remove role:`, err);
+      }
+    }, 1000);
+  }
+});
+
+// ----------------------
+// Button Click → Confirm
+// ----------------------
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith("confirm_")) return;
+
+  const [, flowName, memberId] = interaction.customId.split("_");
+  const guildId = interaction.guild.id;
+  const config = await kv.getConfig(guildId);
+  const flow = config?.messages?.[flowName];
+  if (!flow) return;
+
+  if (interaction.user.id !== memberId)
+    return interaction.reply({
+      content: "❌ This button isn’t for you.",
+      flags: MessageFlags.Ephemeral
+    });
+
+  const member = await interaction.guild.members.fetch(memberId);
+  const channel = interaction.guild.channels.cache.get(flow.channelId);
+
+  if (!recentlyConfirmed.has(guildId)) recentlyConfirmed.set(guildId, new Set());
+  recentlyConfirmed.get(guildId).add(memberId);
+
+  try {
+    await member.roles.add(flow.roleId);
+
+    const dmText = flow.message
+      .replace(/{user}/g, member.user.toString())
+      .replace(/{role}/g, `<@&${flow.roleId}>`)
+      .replace(/\s{2,}/g, "\n\n")
+      .replace(/(?<!\n)\.\s/g, ".\n")
+      .replace(/(?<!\n):\s/g, ":\n");
+
+    try {
+      await member.send(
+        `📩 **Here’s a copy of your onboarding message for reference:**\n\n${dmText}`
+      );
+    } catch {
+      console.warn(`⚠️ Could not DM ${member.user.tag}`);
+    }
+
+    if (channel) {
+      await channel.permissionOverwrites.edit(member.id, {
+        ViewChannel: false
+      });
+      console.log(`🚪 Hid ${channel.name} from ${member.user.tag}`);
+    }
+
+    await interaction.reply({
+      content: "✅ Role assigned and onboarding complete!",
+      flags: MessageFlags.Ephemeral
+    });
+    console.log(`🎯 ${member.user.tag} confirmed and got ${flow.roleId}`);
+  } catch (err) {
+    console.error("❌ Role assign error:", err);
+    await interaction.reply({
+      content: "❌ Could not assign role.",
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  setTimeout(() => {
+    if (recentlyConfirmed.has(guildId))
+      recentlyConfirmed.get(guildId).delete(memberId);
+  }, 10000);
+});
+
+client.login(token);
