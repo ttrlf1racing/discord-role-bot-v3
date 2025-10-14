@@ -11,8 +11,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ActionRowBuilder,
-  PermissionFlagsBits,
-  EmbedBuilder
+  PermissionFlagsBits
 } = require("discord.js");
 const { MessageFlags } = require("discord-api-types/v10");
 const kv = require("./kvRedis");
@@ -37,7 +36,12 @@ if (!token) {
 process.on("unhandledRejection", console.error);
 process.on("uncaughtException", console.error);
 
-// Register commands
+async function fetchAttachmentText(attachment) {
+  const res = await fetch(attachment.url);
+  if (!res.ok) throw new Error(`Failed to fetch attachment: ${res.status}`);
+  return await res.text();
+}
+
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
@@ -45,36 +49,27 @@ client.once(Events.ClientReady, async () => {
     const commands = [
       new SlashCommandBuilder()
         .setName("create-role-message")
-        .setDescription("Create a named onboarding flow for a role (supports multiline via file upload).")
+        .setDescription("Create a named onboarding flow for a role.")
         .addStringOption(o => o.setName("name").setDescription("Flow name").setRequired(true))
-        .addRoleOption(o => o.setName("role").setDescription("Role gated by this flow").setRequired(true))
+        .addRoleOption(o => o.setName("role").setDescription("Role to assign").setRequired(true))
         .addChannelOption(o =>
-          o.setName("channel")
-            .setDescription("Channel to post onboarding message")
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
+          o.setName("channel").setDescription("Channel to post onboarding message").addChannelTypes(ChannelType.GuildText).setRequired(true)
         )
-        .addStringOption(o =>
-          o.setName("message").setDescription("Inline message (Discord flattens newlines)").setRequired(false)
-        )
-        .addAttachmentOption(o =>
-          o.setName("message_file").setDescription("Upload .txt to preserve line breaks/markdown").setRequired(false)
-        ),
+        .addStringOption(o => o.setName("message").setDescription("Message content").setRequired(true)),
 
       new SlashCommandBuilder()
         .setName("edit-role-message")
-        .setDescription("Edit an existing onboarding flow.")
+        .setDescription("Edit an existing flow.")
         .addStringOption(o => o.setName("name").setDescription("Flow name").setRequired(true))
         .addRoleOption(o => o.setName("role").setDescription("New role").setRequired(false))
         .addChannelOption(o =>
           o.setName("channel").setDescription("New channel").addChannelTypes(ChannelType.GuildText).setRequired(false)
         )
-        .addStringOption(o => o.setName("message").setDescription("New inline message").setRequired(false))
-        .addAttachmentOption(o => o.setName("message_file").setDescription("Upload new .txt message").setRequired(false)),
+        .addStringOption(o => o.setName("message").setDescription("New message").setRequired(false)),
 
       new SlashCommandBuilder()
         .setName("delete-role-message")
-        .setDescription("Delete a named onboarding flow.")
+        .setDescription("Delete a flow.")
         .addStringOption(o => o.setName("name").setDescription("Flow name").setRequired(true)),
 
       new SlashCommandBuilder()
@@ -92,14 +87,7 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-// helper: fetch uploaded .txt
-async function fetchAttachmentText(attachment) {
-  const res = await fetch(attachment.url);
-  if (!res.ok) throw new Error(`Failed to fetch attachment: ${res.status}`);
-  return await res.text();
-}
-
-// Slash command handler
+// Slash command handling
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.inGuild())
@@ -117,27 +105,11 @@ client.on(Events.InteractionCreate, async interaction => {
     const name = interaction.options.getString("name");
     const role = interaction.options.getRole("role");
     const channel = interaction.options.getChannel("channel");
-    const inlineMessage = interaction.options.getString("message");
-    const file = interaction.options.getAttachment("message_file");
+    const message = interaction.options.getString("message");
 
-    let messageText = inlineMessage || "";
-    if (file) {
-      if (!file.name.toLowerCase().endsWith(".txt")) {
-        return interaction.reply({ content: "⚠️ Please upload a .txt file.", flags: MessageFlags.Ephemeral });
-      }
-      messageText = await fetchAttachmentText(file);
-    }
-
-    if (!messageText)
-      return interaction.reply({
-        content: "⚠️ Provide a message or upload a .txt file.",
-        flags: MessageFlags.Ephemeral
-      });
-
-    config.messages[name] = { roleId: role.id, channelId: channel.id, message: messageText };
+    config.messages[name] = { roleId: role.id, channelId: channel.id, message };
     await kv.setConfig(guildId, config);
-
-    await interaction.reply(`✅ Flow **${name}** created for role **${role.name}** in **${channel.name}**`);
+    await interaction.reply(`✅ Flow **${name}** created for **${role.name}** in **${channel.name}**.`);
   }
 
   // EDIT FLOW
@@ -148,15 +120,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
     const role = interaction.options.getRole("role");
     const channel = interaction.options.getChannel("channel");
-    const inlineMessage = interaction.options.getString("message");
-    const file = interaction.options.getAttachment("message_file");
+    const message = interaction.options.getString("message");
 
     if (role) config.messages[name].roleId = role.id;
     if (channel) config.messages[name].channelId = channel.id;
-
-    if (inlineMessage !== null && inlineMessage !== "")
-      config.messages[name].message = inlineMessage;
-    if (file) config.messages[name].message = await fetchAttachmentText(file);
+    if (message) config.messages[name].message = message;
 
     await kv.setConfig(guildId, config);
     await interaction.reply(`✅ Flow **${name}** updated.`);
@@ -187,18 +155,18 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// When a user is given a role — send onboarding
+// Send onboarding message when role added
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = await kv.getConfig(guildId);
   if (!config?.messages) return;
 
   const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
-  if (addedRoles.size === 0) return;
+  if (!addedRoles.size) return;
 
   const onboardingSet = await kv.getOnboarding(guildId);
 
-  for (const [name, flow] of Object.entries(config.messages)) {
+  for (const [flowName, flow] of Object.entries(config.messages)) {
     const { roleId, channelId, message } = flow;
     if (!addedRoles.has(roleId)) continue;
 
@@ -208,34 +176,29 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const channel = newMember.guild.channels.cache.get(channelId);
     if (!channel) continue;
 
-    const finalMessage = message
+    // Reformat message for readability
+    const formatted = message
       .replace(/{user}/g, `<@${newMember.id}>`)
       .replace(/{role}/g, `<@&${roleId}>`)
-      .replace(/\r?\n/g, "\n");
+      .replace(/\s{2,}/g, "\n\n") // double spaces -> newlines
+      .replace(/\. /g, ".\n");    // sentence spacing -> line breaks
 
-    const embed = new EmbedBuilder()
-      .setTitle(`Onboarding: ${name}`)
-      .setDescription(finalMessage)
-      .setColor(0x2b2d31);
-
-    const customId = `confirm_${name}_${newMember.id}`;
+    const customId = `confirm_${flowName}_${newMember.id}`;
     const button = new ButtonBuilder()
       .setCustomId(customId)
       .setLabel("✅ I’ve read it")
       .setStyle(ButtonStyle.Success);
-
     const row = new ActionRowBuilder().addComponents(button);
 
     try {
       await channel.send({
-        embeds: [embed],
+        content: formatted,
         components: [row],
         allowedMentions: { users: [newMember.id], roles: [roleId] }
       });
-      console.log(`📨 Sent onboarding (${name}) to ${newMember.user.tag}`);
+      console.log(`📨 Sent onboarding for ${newMember.user.tag}`);
     } catch (err) {
-      console.error("❌ Failed to send onboarding:", err);
-      continue;
+      console.error(`❌ Failed to send onboarding for ${newMember.user.tag}:`, err);
     }
 
     onboardingSet.add(newMember.id);
@@ -243,32 +206,26 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
     try {
       await newMember.roles.remove(roleId);
-      console.log(`⏳ Temporarily removed role ${roleId} from ${newMember.user.tag}`);
-    } catch (err) {
-      console.error("❌ Failed to remove role:", err);
+      console.log(`⏳ Temporarily removed ${roleId} from ${newMember.user.tag}`);
+    } catch (e) {
+      console.error("❌ Failed to remove role:", e);
     }
   }
 });
 
-// Handle button click
+// Button handler
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith("confirm_")) return;
 
-  const parts = interaction.customId.split("_");
-  const flowName = parts[1];
-  const memberId = parts[2];
+  const [, flowName, memberId] = interaction.customId.split("_");
   const guildId = interaction.guild.id;
-
   const config = await kv.getConfig(guildId);
   const flow = config?.messages?.[flowName];
   if (!flow) return;
 
   if (interaction.user.id !== memberId)
-    return interaction.reply({
-      content: "❌ This button isn’t for you.",
-      flags: MessageFlags.Ephemeral
-    });
+    return interaction.reply({ content: "❌ This button isn’t for you.", flags: MessageFlags.Ephemeral });
 
   const member = await interaction.guild.members.fetch(memberId);
   const onboardingSet = await kv.getOnboarding(guildId);
@@ -280,22 +237,14 @@ client.on(Events.InteractionCreate, async interaction => {
 
   try {
     await member.roles.add(flow.roleId);
-    await interaction.reply({
-      content: "✅ Role assigned. Welcome aboard!",
-      flags: MessageFlags.Ephemeral
-    });
-    console.log(`🎯 ${member.user.tag} confirmed ${flowName} → role ${flow.roleId}`);
+    await interaction.reply({ content: "✅ Role assigned. Welcome aboard!", flags: MessageFlags.Ephemeral });
+    console.log(`🎯 ${member.user.tag} confirmed and got ${flow.roleId}`);
   } catch (err) {
     console.error("❌ Role assign error:", err);
-    await interaction.reply({
-      content: "❌ Failed to assign role.",
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: "❌ Could not assign role.", flags: MessageFlags.Ephemeral });
   }
 
-  setTimeout(() => {
-    recentlyConfirmed.get(guildId)?.delete(member.id);
-  }, 10000);
+  setTimeout(() => recentlyConfirmed.get(guildId)?.delete(member.id), 10000);
 });
 
 client.login(token);
