@@ -303,7 +303,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 });
 
 // ----------------------
-// Button Click → Confirm
+// Button Click → Confirm (with admin message)
 // ----------------------
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
@@ -337,6 +337,7 @@ client.on(Events.InteractionCreate, async interaction => {
       .replace(/(?<!\n)\.\s/g, ".\n")
       .replace(/(?<!\n):\s/g, ":\n");
 
+    // 📨 DM copy
     try {
       await member.send(
         `📩 **Here’s a copy of your onboarding message for reference:**\n\n${dmText}`
@@ -345,11 +346,26 @@ client.on(Events.InteractionCreate, async interaction => {
       console.warn(`⚠️ Could not DM ${member.user.tag}`);
     }
 
+    // 🚪 Hide onboarding channel + post admin confirmation
     if (channel) {
       await channel.permissionOverwrites.edit(member.id, {
         ViewChannel: false
       });
-      console.log(`🚪 Hid ${channel.name} from ${member.user.tag}`);
+
+      const timestamp = new Date().toLocaleString("en-GB", {
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+
+      await channel.send(
+        `✅ <@${member.id}> has confirmed and been assigned <@&${flow.roleId}> — ${timestamp}`
+      );
+
+      console.log(`🚪 Hid ${channel.name} and logged confirmation for ${member.user.tag}`);
     }
 
     await interaction.reply({
