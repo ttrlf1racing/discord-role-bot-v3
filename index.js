@@ -1,3 +1,4 @@
+```js
 require("dotenv").config();
 const {
   Client,
@@ -11,7 +12,8 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ActionRowBuilder,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  AttachmentBuilder
 } = require("discord.js");
 const { MessageFlags } = require("discord-api-types/v10");
 const kv = require("./kvRedis");
@@ -23,9 +25,10 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessageReactions
   ],
-  partials: [Partials.Channel, Partials.Message]
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction]
 });
 
 const token = process.env.DISCORD_TOKEN?.trim();
@@ -93,7 +96,31 @@ const getCommands = () => [
 
   new SlashCommandBuilder()
     .setName("list-role-messages")
-    .setDescription("List all configured onboarding flows.")
+    .setDescription("List all configured onboarding flows."),
+
+  // ---- NEW: Export reactions command ----
+  new SlashCommandBuilder()
+    .setName("export-reactions")
+    .setDescription("Export all reactions from a message as CSV.")
+    .addStringOption(o =>
+      o
+        .setName("message")
+        .setDescription("Message URL or ID")
+        .setRequired(true)
+    )
+    .addChannelOption(o =>
+      o
+        .setName("channel")
+        .setDescription("Channel (required if passing a bare message ID)")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+    .addBooleanOption(o =>
+      o
+        .setName("include_user_ids")
+        .setDescription("Include User IDs in the CSV (default: true)")
+        .setRequired(false)
+    )
 ].map(c => c.toJSON());
 
 // ----------------------
@@ -227,6 +254,88 @@ client.on(Events.InteractionCreate, async interaction => {
       content: `📋 Configured Flows:\n${list}`,
       flags: MessageFlags.Ephemeral
     });
+  }
+
+  // EXPORT REACTIONS
+  if (interaction.commandName === "export-reactions") {
+    const raw = interaction.options.getString("message", true);
+    const optChannel = interaction.options.getChannel("channel");
+    const includeIds = interaction.options.getBoolean("include_user_ids") ?? true;
+
+    await interaction.deferReply({ ephemeral: true });
+
+    // Parse either a full URL or bare ID
+    const parseMessageRef = (input) => {
+      const urlMatch = input.match(/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)/);
+      if (urlMatch) {
+        return { guildId: urlMatch[1], channelId: urlMatch[2], messageId: urlMatch[3] };
+      }
+      return { messageId: input };
+    };
+
+    const ref = parseMessageRef(raw);
+
+    // Resolve channel
+    let channel = optChannel ?? null;
+    if (!channel) {
+      if (!ref.channelId) {
+        return interaction.editReply("❌ Please provide a channel when using a bare message ID.");
+      }
+      channel = interaction.guild.channels.cache.get(ref.channelId);
+      if (!channel) return interaction.editReply("❌ I can’t access that channel.");
+    }
+
+    // Fetch message
+    const messageId = ref.messageId;
+    if (!messageId) return interaction.editReply("❌ Could not find a message ID in your input.");
+    let message;
+    try {
+      message = await channel.messages.fetch(messageId);
+    } catch (err) {
+      console.error("Fetch message failed:", err);
+      return interaction.editReply("❌ I couldn’t fetch that message. Check the channel and message ID/URL.");
+    }
+
+    // Build CSV
+    const header = includeIds ? "Emoji,User,User ID\n" : "Emoji,User\n";
+    let csv = header;
+
+    const addCsvLine = (emoji, user) => {
+      const safeName = `${user.username}#${user.discriminator}`;
+      csv += includeIds ? `${emoji},${safeName},${user.id}\n` : `${emoji},${safeName}\n`;
+    };
+
+    try {
+      for (const [, reaction] of message.reactions.cache) {
+        const emojiLabel = reaction.emoji?.id
+          ? `${reaction.emoji.name}:${reaction.emoji.id}`
+          : reaction.emoji?.name ?? "unknown";
+
+        // paginate users (100 per page)
+        let lastId = undefined;
+        while (true) {
+          const fetched = await reaction.users.fetch({ limit: 100, after: lastId });
+          if (fetched.size === 0) break;
+
+          for (const [, user] of fetched) addCsvLine(emojiLabel, user);
+
+          lastId = [...fetched.keys()].pop();
+          if (fetched.size < 100) break;
+        }
+      }
+    } catch (err) {
+      console.error("Fetch reaction users failed:", err);
+      return interaction.editReply(
+        "❌ I couldn’t fetch some reaction users. Ensure I have **View Channel**, **Read Message History**, and **Read Reactions**."
+      );
+    }
+
+    if (csv === header) {
+      return interaction.editReply("ℹ️ That message has no reactions to export.");
+    }
+
+    const file = new AttachmentBuilder(Buffer.from(csv, "utf8"), { name: "reactions.csv" });
+    await interaction.editReply({ content: "✅ Export complete. Here’s your file:", files: [file] });
   }
 });
 
@@ -388,3 +497,4 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 client.login(token);
+```
