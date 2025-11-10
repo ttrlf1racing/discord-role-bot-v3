@@ -1,3 +1,5 @@
+Here you go — full file with the `console.log` fixed (single line) and a couple of “smart quotes” replaced to avoid encoding hiccups (e.g., `I've`). Drop-in replacement:
+
 ```js
 require("dotenv").config();
 const {
@@ -326,7 +328,7 @@ client.on(Events.InteractionCreate, async interaction => {
     } catch (err) {
       console.error("Fetch reaction users failed:", err);
       return interaction.editReply(
-        "❌ I couldn’t fetch some reaction users. Ensure I have **View Channel**, **Read Message History**, and **Read Reactions**."
+        "❌ I couldn’t fetch some reaction users. Ensure I have View Channel, Read Message History, and Read Reactions."
       );
     }
 
@@ -383,7 +385,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const customId = `confirm_${flowName}_${newMember.id}`;
     const button = new ButtonBuilder()
       .setCustomId(customId)
-      .setLabel("✅ I’ve read it")
+      .setLabel("✅ I've read it")
       .setStyle(ButtonStyle.Success);
     const row = new ActionRowBuilder().addComponents(button);
 
@@ -498,3 +500,5 @@ client.on(Events.InteractionCreate, async interaction => {
 
 client.login(token);
 ```
+
+If anything else explodes, paste the new stack trace and I’ll zero in on it.
