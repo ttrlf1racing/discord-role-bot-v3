@@ -18,6 +18,10 @@ const kv = require("./kvRedis");
 
 const recentlyConfirmed = new Map(); // guildId → Set(userIds)
 
+// 🚦 NEW: per-user onboarding queue (guildId:userId → Promise chain)
+const onboardingQueue = new Map();
+const sleep = ms => new Promise(res => setTimeout(res, ms));
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -231,13 +235,94 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 // ----------------------
-// Role Added → Send Onboarding
+// Helper: send onboarding for a single flow (used by queue)
+// ----------------------
+async function sendOnboardingForFlow(member, flowName, flow) {
+  const channel = member.guild.channels.cache.get(flow.channelId);
+  if (!channel) return;
+
+  // Ensure user can see the channel while onboarding is open
+  try {
+    await channel.permissionOverwrites.edit(member.id, { ViewChannel: true });
+    console.log(`👁️ Gave ${member.user.tag} access to ${channel.name}`);
+  } catch (err) {
+    console.warn(`⚠️ Could not modify ${channel?.name}:`, err.message);
+  }
+
+  let formattedMessage = flow.message
+    .replace(/{user}/g, `<@${member.id}>`)
+    .replace(/{role}/g, `<@&${flow.roleId}>`)
+    .replace(/\s{2,}/g, "\n\n")
+    .replace(/(?<!\n)\.\s/g, ".\n")
+    .replace(/(?<!\n):\s/g, ":\n");
+
+  const customId = `confirm_${flowName}_${member.id}`;
+  const button = new ButtonBuilder()
+    .setCustomId(customId)
+    .setLabel("✅ I’ve read it")
+    .setStyle(ButtonStyle.Success);
+  const row = new ActionRowBuilder().addComponents(button);
+
+  try {
+    await channel.send({ content: formattedMessage, components: [row] });
+    console.log(`📨 Sent onboarding for ${member.user.tag} (${flowName})`);
+  } catch (err) {
+    console.error(`❌ Failed to send onboarding:`, err);
+    return;
+  }
+
+  // Briefly remove the role to force confirmation flow
+  setTimeout(async () => {
+    try {
+      await member.roles.remove(flow.roleId);
+      console.log(`⏳ Temporarily removed ${flow.roleId} from ${member.user.tag}`);
+    } catch (err) {
+      console.error(`❌ Failed to remove role:`, err);
+    }
+  }, 1000);
+}
+
+// ----------------------
+// Queue runner: ensure flows process sequentially per user
+// ----------------------
+function queueOnboarding(member, flowName, flow) {
+  const key = `${member.guild.id}:${member.id}`;
+
+  // Last queued job (or resolved if none)
+  const last = onboardingQueue.get(key) || Promise.resolve();
+
+  // Chain the next job to the previous
+  const next = last
+    .catch(() => {}) // swallow previous error to keep chain alive
+    .then(async () => {
+      // Small spacing so messages don't pile up and first isn’t buried
+      await sleep(2000);
+      await sendOnboardingForFlow(member, flowName, flow);
+      // Extra tiny pause to give Discord time to render before the next one
+      await sleep(500);
+    });
+
+  // Track the chain; clean up when settled
+  onboardingQueue.set(
+    key,
+    next.finally(() => {
+      // Only delete if this is still the latest promise for the key
+      if (onboardingQueue.get(key) === next) onboardingQueue.delete(key);
+    })
+  );
+
+  return next;
+}
+
+// ----------------------
+// Role Added → Queue Onboarding (sequential per user)
 // ----------------------
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const guildId = newMember.guild.id;
   const config = await kv.getConfig(guildId);
   if (!config?.messages) return;
 
+  // Skip if they just confirmed a flow (prevents immediate re-trigger)
   if (
     recentlyConfirmed.has(guildId) &&
     recentlyConfirmed.get(guildId).has(newMember.id)
@@ -249,56 +334,15 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const addedRoles = [...newRoles].filter(r => !oldRoles.has(r));
   if (!addedRoles.length) return;
 
-  for (const [flowName, flow] of Object.entries(config.messages)) {
-    if (!addedRoles.includes(flow.roleId)) continue;
+  // Collect applicable flows (preserve config order)
+  const triggered = Object.entries(config.messages).filter(
+    ([, f]) => addedRoles.includes(f.roleId)
+  );
+  if (!triggered.length) return;
 
-    const channel = newMember.guild.channels.cache.get(flow.channelId);
-    if (!channel) continue;
-
-    try {
-      await channel.permissionOverwrites.edit(newMember.id, {
-        ViewChannel: true
-      });
-      console.log(`👁️ Gave ${newMember.user.tag} access to ${channel.name}`);
-    } catch (err) {
-      console.warn(`⚠️ Could not modify ${channel.name}:`, err.message);
-    }
-
-    let formattedMessage = flow.message
-      .replace(/{user}/g, `<@${newMember.id}>`)
-      .replace(/{role}/g, `<@&${flow.roleId}>`)
-      .replace(/\s{2,}/g, "\n\n")
-      .replace(/(?<!\n)\.\s/g, ".\n")
-      .replace(/(?<!\n):\s/g, ":\n");
-
-    const customId = `confirm_${flowName}_${newMember.id}`;
-    const button = new ButtonBuilder()
-      .setCustomId(customId)
-      .setLabel("✅ I’ve read it")
-      .setStyle(ButtonStyle.Success);
-    const row = new ActionRowBuilder().addComponents(button);
-
-    try {
-      await channel.send({
-        content: formattedMessage,
-        components: [row]
-      });
-      console.log(`📨 Sent onboarding for ${newMember.user.tag} (${flowName})`);
-    } catch (err) {
-      console.error(`❌ Failed to send onboarding:`, err);
-      continue;
-    }
-
-    setTimeout(async () => {
-      try {
-        await newMember.roles.remove(flow.roleId);
-        console.log(
-          `⏳ Temporarily removed ${flow.roleId} from ${newMember.user.tag}`
-        );
-      } catch (err) {
-        console.error(`❌ Failed to remove role:`, err);
-      }
-    }, 1000);
+  // Queue each flow sequentially for this user
+  for (const [flowName, flow] of triggered) {
+    queueOnboarding(newMember, flowName, flow);
   }
 });
 
@@ -348,9 +392,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     // 🚪 Hide onboarding channel + post admin confirmation
     if (channel) {
-      await channel.permissionOverwrites.edit(member.id, {
-        ViewChannel: false
-      });
+      await channel.permissionOverwrites.edit(member.id, { ViewChannel: false });
 
       const timestamp = new Date().toLocaleString("en-GB", {
         hour12: false,
@@ -365,7 +407,9 @@ client.on(Events.InteractionCreate, async interaction => {
         `✅ <@${member.id}> has confirmed and been assigned <@&${flow.roleId}> — ${timestamp}`
       );
 
-      console.log(`🚪 Hid ${channel.name} and logged confirmation for ${member.user.tag}`);
+      console.log(
+        `🚪 Hid ${channel.name} and logged confirmation for ${member.user.tag}`
+      );
     }
 
     await interaction.reply({
