@@ -61,7 +61,7 @@ const getCommands = () => [
     .addStringOption(o =>
       o
         .setName("message")
-        .setDescription("DM text (use {user} and {role})")
+        .setDescription("DM text (use {user}, {role} and \\n for new lines)")
         .setRequired(true)
     ),
 
@@ -75,7 +75,10 @@ const getCommands = () => [
       o.setName("role").setDescription("New role").setRequired(false)
     )
     .addStringOption(o =>
-      o.setName("message").setDescription("New DM text").setRequired(false)
+      o
+        .setName("message")
+        .setDescription("New DM text (use \\n for new lines)")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -149,7 +152,10 @@ client.on(Events.InteractionCreate, async interaction => {
   if (interaction.commandName === "create-role-message") {
     const name = interaction.options.getString("name");
     const role = interaction.options.getRole("role");
-    const message = interaction.options.getString("message");
+
+    // NEW: support \n in templates
+    const rawMessage = interaction.options.getString("message");
+    const message = rawMessage.replace(/\\n/g, "\n");
 
     config.messages[name] = { roleId: role.id, message };
     await kv.setConfig(guildId, config);
@@ -168,9 +174,15 @@ client.on(Events.InteractionCreate, async interaction => {
       });
 
     const role = interaction.options.getRole("role");
-    const message = interaction.options.getString("message");
+    const rawMessage = interaction.options.getString("message");
+
     if (role) config.messages[name].roleId = role.id;
-    if (message) config.messages[name].message = message;
+
+    // NEW: support \n in edited templates
+    if (rawMessage !== null) {
+      const message = rawMessage.replace(/\\n/g, "\n");
+      config.messages[name].message = message;
+    }
 
     await kv.setConfig(guildId, config);
     return interaction.reply(`✅ Template **${name}** updated.`);
@@ -240,7 +252,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const roleName = roleObj?.name || "the role";
     const roleMention = `<@&${flow.roleId}>`;
 
-    // Build DM text (you can customize formatting here)
+    // Build DM text
     const dmText = (flow.message || "")
       .replace(/{user}/g, newMember.user.toString())
       .replace(/{role}/g, `${roleMention} (${roleName})`);
@@ -249,7 +261,6 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       await newMember.send(dmText || `You were given ${roleName}.`);
       console.log(`📩 DM sent to ${newMember.user.tag} for template ${name}`);
     } catch (err) {
-      // Can't DM (user privacy settings). Log and move on.
       console.warn(`⚠️ Could not DM ${newMember.user.tag}: ${err?.message || err}`);
     }
   }
