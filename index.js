@@ -7,7 +7,8 @@ const {
   SlashCommandBuilder,
   REST,
   Routes,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  ChannelType
 } = require("discord.js");
 const { MessageFlags } = require("discord-api-types/v10");
 const kv = require("./kvRedis");
@@ -69,13 +70,20 @@ const getCommands = () => [
     .addStringOption(o =>
       o
         .setName("message")
-        .setDescription("DM text (use {user}, {tier}, {tierHeads} and \\n for new lines)")
+        .setDescription("DM text (use {user}, {tier}, {tierHeads}, {tierPaddock} and \\n for new lines)")
         .setRequired(true)
     )
     .addRoleOption(o =>
       o
         .setName("tierheadrole")
         .setDescription("Tier Head role for this tier")
+        .setRequired(false)
+    )
+    .addChannelOption(o =>
+      o
+        .setName("tierpaddock")
+        .setDescription("Tier paddock text channel for this tier")
+        .addChannelTypes(ChannelType.GuildText)
         .setRequired(false)
     ),
 
@@ -92,6 +100,13 @@ const getCommands = () => [
       o
         .setName("tierheadrole")
         .setDescription("New Tier Head role")
+        .setRequired(false)
+    )
+    .addChannelOption(o =>
+      o
+        .setName("tierpaddock")
+        .setDescription("New Tier paddock text channel")
+        .addChannelTypes(ChannelType.GuildText)
         .setRequired(false)
     )
     .addStringOption(o =>
@@ -179,12 +194,14 @@ client.on(Events.InteractionCreate, async interaction => {
     const role = interaction.options.getRole("role");
     const rawMessage = interaction.options.getString("message");
     const tierHeadRole = interaction.options.getRole("tierheadrole");
+    const tierPaddock = interaction.options.getChannel("tierpaddock");
 
     const message = rawMessage.replace(/\\n/g, "\n");
 
     config.messages[name] = {
       roleId: role.id,
       tierHeadRoleId: tierHeadRole?.id || null,
+      tierPaddockChannelId: tierPaddock?.id || null,
       message
     };
 
@@ -192,7 +209,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
     return interaction.reply(
       `✅ Template **${name}** created for role **${role.name}**` +
-      (tierHeadRole ? ` with Tier Head role **${tierHeadRole.name}**.` : ".")
+      `${tierHeadRole ? ` with Tier Head role **${tierHeadRole.name}**` : ""}` +
+      `${tierPaddock ? ` and paddock channel ${tierPaddock}` : ""}.`
     );
   }
 
@@ -208,10 +226,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
     const role = interaction.options.getRole("role");
     const tierHeadRole = interaction.options.getRole("tierheadrole");
+    const tierPaddock = interaction.options.getChannel("tierpaddock");
     const rawMessage = interaction.options.getString("message");
 
     if (role) config.messages[name].roleId = role.id;
     if (tierHeadRole) config.messages[name].tierHeadRoleId = tierHeadRole.id;
+    if (tierPaddock) config.messages[name].tierPaddockChannelId = tierPaddock.id;
 
     if (rawMessage !== null) {
       config.messages[name].message = rawMessage.replace(/\\n/g, "\n");
@@ -252,7 +272,10 @@ client.on(Events.InteractionCreate, async interaction => {
         const tierHeadInfo = f.tierHeadRoleId
           ? ` | Tier Heads: <@&${f.tierHeadRoleId}>`
           : "";
-        return `• **${n}** → Tier <@&${f.roleId}>${tierHeadInfo} (${(f.message || "").length} chars)`;
+        const paddockInfo = f.tierPaddockChannelId
+          ? ` | Paddock: <#${f.tierPaddockChannelId}>`
+          : "";
+        return `• **${n}** → Tier <@&${f.roleId}>${tierHeadInfo}${paddockInfo} (${(f.message || "").length} chars)`;
       })
       .join("\n");
 
@@ -299,28 +322,33 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
     let tierHeadsText = "the Tier Heads";
 
-if (flow.tierHeadRoleId) {
-  const tierHeadRole = newMember.guild.roles.cache.get(flow.tierHeadRoleId);
+    if (flow.tierHeadRoleId) {
+      const tierHeadRole = newMember.guild.roles.cache.get(flow.tierHeadRoleId);
 
-  if (tierHeadRole) {
-    const tierHeadNames = [...tierHeadRole.members.values()]
-      .filter(member => !member.user.bot)
-      .map(member => member.displayName);
+      if (tierHeadRole) {
+        const tierHeadNames = [...tierHeadRole.members.values()]
+          .filter(member => !member.user.bot)
+          .map(member => member.displayName);
 
-    if (tierHeadNames.length === 1) {
-      tierHeadsText = tierHeadNames[0];
-    } else if (tierHeadNames.length > 1) {
-      tierHeadsText = tierHeadNames.join(", ");
-    } else {
-      tierHeadsText = `the holders of ${tierHeadRole.name}`;
+        if (tierHeadNames.length === 1) {
+          tierHeadsText = tierHeadNames[0];
+        } else if (tierHeadNames.length > 1) {
+          tierHeadsText = tierHeadNames.join(", ");
+        } else {
+          tierHeadsText = `the holders of ${tierHeadRole.name}`;
+        }
+      }
     }
-  }
-}
+
+    const tierPaddockText = flow.tierPaddockChannelId
+      ? `<#${flow.tierPaddockChannelId}>`
+      : "your tier paddock";
 
     const dmText = (flow.message || "")
       .replace(/{user}/g, newMember.user.toString())
       .replace(/{tier}/g, tierName)
-      .replace(/{tierHeads}/g, tierHeadsText);
+      .replace(/{tierHeads}/g, tierHeadsText)
+      .replace(/{tierPaddock}/g, tierPaddockText);
 
     try {
       await newMember.send(dmText || `You were given ${tierName}.`);
