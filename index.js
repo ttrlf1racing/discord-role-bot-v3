@@ -299,23 +299,23 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
     let tierHeadsText = "the Tier Heads";
 
-    if (flow.tierHeadRoleId) {
-      const tierHeadRole = newMember.guild.roles.cache.get(flow.tierHeadRoleId);
+if (flow.tierHeadRoleId) {
+  const tierHeadRole = newMember.guild.roles.cache.get(flow.tierHeadRoleId);
 
-      if (tierHeadRole) {
-        const tierHeadMentions = [...tierHeadRole.members.values()]
-          .filter(member => !member.user.bot)
-          .map(member => `<@${member.id}>`);
+  if (tierHeadRole) {
+    const tierHeadNames = [...tierHeadRole.members.values()]
+      .filter(member => !member.user.bot)
+      .map(member => member.displayName);
 
-        if (tierHeadMentions.length === 1) {
-          tierHeadsText = tierHeadMentions[0];
-        } else if (tierHeadMentions.length > 1) {
-          tierHeadsText = tierHeadMentions.join(", ");
-        } else {
-          tierHeadsText = `the holders of ${tierHeadRole.name}`;
-        }
-      }
+    if (tierHeadNames.length === 1) {
+      tierHeadsText = tierHeadNames[0];
+    } else if (tierHeadNames.length > 1) {
+      tierHeadsText = tierHeadNames.join(", ");
+    } else {
+      tierHeadsText = `the holders of ${tierHeadRole.name}`;
     }
+  }
+}
 
     const dmText = (flow.message || "")
       .replace(/{user}/g, newMember.user.toString())
