@@ -24,8 +24,10 @@ function isGuarded(g, u, r) {
   const k = guardKey(g, u, r);
   const now = Date.now();
   const exp = sentGuard.get(k);
+
   if (exp && exp > now) return true;
   if (exp && exp <= now) sentGuard.delete(k);
+
   return false;
 }
 
@@ -64,17 +66,17 @@ const getCommands = () => [
     .addRoleOption(o =>
       o.setName("role").setDescription("Tier role to watch").setRequired(true)
     )
-    .addRoleOption(o =>
-      o
-        .setName("tierheadrole")
-        .setDescription("Tier Head role for this tier")
-        .setRequired(false)
-    )
     .addStringOption(o =>
       o
         .setName("message")
         .setDescription("DM text (use {user}, {tier}, {tierHeads} and \\n for new lines)")
         .setRequired(true)
+    )
+    .addRoleOption(o =>
+      o
+        .setName("tierheadrole")
+        .setDescription("Tier Head role for this tier")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -112,7 +114,7 @@ const getCommands = () => [
 ].map(c => c.toJSON());
 
 // ----------------------
-// Register Commands
+// Register Commands on Startup & on New Guild
 // ----------------------
 async function registerCommandsForGuild(guildId) {
   const rest = new REST({ version: "10" }).setToken(token);
@@ -175,8 +177,9 @@ client.on(Events.InteractionCreate, async interaction => {
   if (interaction.commandName === "create-role-message") {
     const name = interaction.options.getString("name");
     const role = interaction.options.getRole("role");
-    const tierHeadRole = interaction.options.getRole("tierheadrole");
     const rawMessage = interaction.options.getString("message");
+    const tierHeadRole = interaction.options.getRole("tierheadrole");
+
     const message = rawMessage.replace(/\\n/g, "\n");
 
     config.messages[name] = {
@@ -189,7 +192,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     return interaction.reply(
       `✅ Template **${name}** created for role **${role.name}**` +
-      `${tierHeadRole ? ` with Tier Heads role **${tierHeadRole.name}**.` : "."}`
+      (tierHeadRole ? ` with Tier Head role **${tierHeadRole.name}**.` : ".")
     );
   }
 
@@ -211,8 +214,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (tierHeadRole) config.messages[name].tierHeadRoleId = tierHeadRole.id;
 
     if (rawMessage !== null) {
-      const message = rawMessage.replace(/\\n/g, "\n");
-      config.messages[name].message = message;
+      config.messages[name].message = rawMessage.replace(/\\n/g, "\n");
     }
 
     await kv.setConfig(guildId, config);
@@ -274,11 +276,13 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const addedRoles = [...newRoles].filter(r => !oldRoles.has(r));
   if (!addedRoles.length) return;
 
-  // Make sure role member lists are populated
   try {
     await newMember.guild.members.fetch();
   } catch (err) {
-    console.warn(`⚠️ Could not fully fetch guild members for ${newMember.guild.name}:`, err?.message || err);
+    console.warn(
+      `⚠️ Could not fully fetch guild members for ${newMember.guild.name}:`,
+      err?.message || err
+    );
   }
 
   for (const [name, flow] of Object.entries(config.messages)) {
