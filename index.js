@@ -385,19 +385,24 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       console.warn(`⚠️ Could not DM ${newMember.user.tag}: ${err?.message || err}`);
     }
 
-    // Also post a copy into the tier paddock, but without the paddock link
+       // Also post a copy into the tier paddock, but without the paddock link
     if (flow.tierPaddockChannelId) {
       const paddockChannel = newMember.guild.channels.cache.get(
         flow.tierPaddockChannelId
       );
 
       if (paddockChannel && paddockChannel.isTextBased()) {
-        const paddockText = (flow.message || "")
+        let paddockText = (flow.message || "")
           .replace(/{user}/g, newMember.user.toString())
           .replace(/{tier}/g, tierName)
           .replace(/{tierHeads}/g, tierHeadsText)
           .replace(/{tierPaddock}/g, "")
-          .replace(/{checkIn}/g, checkInText)
+          .replace(/{checkIn}/g, checkInText);
+
+        // Remove the now-broken info line if it depended on {tierPaddock}
+        paddockText = paddockText
+          .replace(/^\s*If you need any further info, please use\s*\.\s*$/gim, "")
+          .replace(/^\s*If you need any further info, please use\s*$/gim, "")
           .replace(/\n{3,}/g, "\n\n")
           .trim();
 
