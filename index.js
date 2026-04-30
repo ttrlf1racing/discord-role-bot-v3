@@ -70,7 +70,7 @@ const getCommands = () => [
     .addStringOption(o =>
       o
         .setName("message")
-        .setDescription("DM text (use {user}, {tier}, {tierHeads}, {tierPaddock} and \\n for new lines)")
+        .setDescription("DM text (use {user}, {tier}, {tierHeads}, {tierPaddock}, {checkIn} and \\n for new lines)")
         .setRequired(true)
     )
     .addRoleOption(o =>
@@ -83,6 +83,13 @@ const getCommands = () => [
       o
         .setName("tierpaddock")
         .setDescription("Tier paddock text channel for this tier")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+    .addChannelOption(o =>
+      o
+        .setName("tiercheckin")
+        .setDescription("Tier check-in text channel for this tier")
         .addChannelTypes(ChannelType.GuildText)
         .setRequired(false)
     ),
@@ -109,10 +116,17 @@ const getCommands = () => [
         .addChannelTypes(ChannelType.GuildText)
         .setRequired(false)
     )
+    .addChannelOption(o =>
+      o
+        .setName("tiercheckin")
+        .setDescription("New Tier check-in text channel")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
     .addStringOption(o =>
       o
         .setName("message")
-        .setDescription("New DM text (use \\n for new lines)")
+        .setDescription("New DM text (use {user}, {tier}, {tierHeads}, {tierPaddock}, {checkIn} and \\n for new lines)")
         .setRequired(false)
     ),
 
@@ -195,6 +209,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const rawMessage = interaction.options.getString("message");
     const tierHeadRole = interaction.options.getRole("tierheadrole");
     const tierPaddock = interaction.options.getChannel("tierpaddock");
+    const tierCheckIn = interaction.options.getChannel("tiercheckin");
 
     const message = rawMessage.replace(/\\n/g, "\n");
 
@@ -202,6 +217,7 @@ client.on(Events.InteractionCreate, async interaction => {
       roleId: role.id,
       tierHeadRoleId: tierHeadRole?.id || null,
       tierPaddockChannelId: tierPaddock?.id || null,
+      tierCheckInChannelId: tierCheckIn?.id || null,
       message
     };
 
@@ -209,8 +225,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
     return interaction.reply(
       `✅ Template **${name}** created for role **${role.name}**` +
-      `${tierHeadRole ? ` with Tier Head role **${tierHeadRole.name}**` : ""}` +
-      `${tierPaddock ? ` and paddock channel ${tierPaddock}` : ""}.`
+        `${tierHeadRole ? ` with Tier Head role **${tierHeadRole.name}**` : ""}` +
+        `${tierPaddock ? ` and paddock channel ${tierPaddock}` : ""}` +
+        `${tierCheckIn ? ` and check-in channel ${tierCheckIn}` : ""}.`
     );
   }
 
@@ -227,11 +244,13 @@ client.on(Events.InteractionCreate, async interaction => {
     const role = interaction.options.getRole("role");
     const tierHeadRole = interaction.options.getRole("tierheadrole");
     const tierPaddock = interaction.options.getChannel("tierpaddock");
+    const tierCheckIn = interaction.options.getChannel("tiercheckin");
     const rawMessage = interaction.options.getString("message");
 
     if (role) config.messages[name].roleId = role.id;
     if (tierHeadRole) config.messages[name].tierHeadRoleId = tierHeadRole.id;
     if (tierPaddock) config.messages[name].tierPaddockChannelId = tierPaddock.id;
+    if (tierCheckIn) config.messages[name].tierCheckInChannelId = tierCheckIn.id;
 
     if (rawMessage !== null) {
       config.messages[name].message = rawMessage.replace(/\\n/g, "\n");
@@ -275,7 +294,11 @@ client.on(Events.InteractionCreate, async interaction => {
         const paddockInfo = f.tierPaddockChannelId
           ? ` | Paddock: <#${f.tierPaddockChannelId}>`
           : "";
-        return `• **${n}** → Tier <@&${f.roleId}>${tierHeadInfo}${paddockInfo} (${(f.message || "").length} chars)`;
+        const checkInInfo = f.tierCheckInChannelId
+          ? ` | Check-in: <#${f.tierCheckInChannelId}>`
+          : "";
+
+        return `• **${n}** → Tier <@&${f.roleId}>${tierHeadInfo}${paddockInfo}${checkInInfo} (${(f.message || "").length} chars)`;
       })
       .join("\n");
 
@@ -344,17 +367,51 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       ? `<#${flow.tierPaddockChannelId}>`
       : "your tier paddock";
 
+    const checkInText = flow.tierCheckInChannelId
+      ? `<#${flow.tierCheckInChannelId}>`
+      : "your tier check-in";
+
     const dmText = (flow.message || "")
       .replace(/{user}/g, newMember.user.toString())
       .replace(/{tier}/g, tierName)
       .replace(/{tierHeads}/g, tierHeadsText)
-      .replace(/{tierPaddock}/g, tierPaddockText);
+      .replace(/{tierPaddock}/g, tierPaddockText)
+      .replace(/{checkIn}/g, checkInText);
 
     try {
       await newMember.send(dmText || `You were given ${tierName}.`);
       console.log(`📩 DM sent to ${newMember.user.tag} for template ${name}`);
     } catch (err) {
       console.warn(`⚠️ Could not DM ${newMember.user.tag}: ${err?.message || err}`);
+    }
+
+    // Also post a copy into the tier paddock, but without the paddock link
+    if (flow.tierPaddockChannelId) {
+      const paddockChannel = newMember.guild.channels.cache.get(
+        flow.tierPaddockChannelId
+      );
+
+      if (paddockChannel && paddockChannel.isTextBased()) {
+        const paddockText = (flow.message || "")
+          .replace(/{user}/g, newMember.user.toString())
+          .replace(/{tier}/g, tierName)
+          .replace(/{tierHeads}/g, tierHeadsText)
+          .replace(/{tierPaddock}/g, "")
+          .replace(/{checkIn}/g, checkInText)
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+
+        try {
+          await paddockChannel.send(paddockText || `You were given ${tierName}.`);
+          console.log(
+            `📨 Paddock message sent in #${paddockChannel.name} for ${newMember.user.tag} (template ${name})`
+          );
+        } catch (err) {
+          console.warn(
+            `⚠️ Could not send paddock message in ${paddockChannel?.name}: ${err?.message || err}`
+          );
+        }
+      }
     }
   }
 });
